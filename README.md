@@ -35,11 +35,11 @@ multi-dimensional scoring engine.
 
 ## Workspace Layout
 
-| Crate | Type | Purpose |
-|---|---|---|
-| `deepmail-api` | Binary | HTTP server — upload, query, auth |
-| `deepmail-common` | Library | Shared types, DB, Redis, validation |
-| `deepmail-worker` | Binary | Async job consumer and analysis pipeline |
+| Crate             | Type    | Purpose                                  |
+| ----------------- | ------- | ---------------------------------------- |
+| `deepmail-api`    | Binary  | HTTP server — upload, query, auth        |
+| `deepmail-common` | Library | Shared types, DB, Redis, validation      |
+| `deepmail-worker` | Binary  | Async job consumer and analysis pipeline |
 
 ## Quick Start
 
@@ -80,4 +80,3 @@ See `config.toml` for all available settings.
 4. Job enqueued to Redis stream `deepmail:jobs`
 5. Worker picks job → runs analysis pipeline
 6. Results stored → WebSocket notification sent (future)
-# backend-beta
