@@ -1,111 +1,144 @@
-//! DeepMail Worker — Async job consumer and analysis pipeline.
+//! DeepMail Worker — async job consumer and analysis pipeline.
 //!
-//! Connects to Redis, reads from the `deepmail:jobs` stream using
-//! consumer groups, and processes analysis jobs.
-//!
-//! Phase 1: Skeleton that logs received jobs.
-//! Future phases: full analysis pipeline (header parsing, IOC extraction,
-//! URL analysis, attachment analysis, threat intel, scoring, etc.)
+//! Connects to Redis, reads jobs from the email analysis queue,
+//! runs the full analysis pipeline, and stores results in SQLite.
 
-use std::process;
-use tracing_subscriber::EnvFilter;
+mod pipeline;
 
-use deepmail_common::config::AppConfig;
-use deepmail_common::queue::RedisQueue;
+use anyhow::Result;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+use deepmail_common::config::DeepMailConfig;
+use deepmail_common::db;
+use deepmail_common::queue::{RedisQueue, QUEUE_EMAIL_ANALYSIS};
+
+use crate::pipeline::PipelineContext;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // Load configuration
-    let config = AppConfig::load()?;
+async fn main() -> Result<()> {
+    // ── Initialize tracing ───────────────────────────────────────────────────
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "deepmail_worker=info,deepmail_common=info".into()),
+        )
+        .with(tracing_subscriber::fmt::layer())
+        .init();
 
-    // Initialize tracing
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&config.logging.level));
+    tracing::info!("DeepMail Worker starting...");
 
-    match config.logging.format.as_str() {
-        "json" => {
-            tracing_subscriber::fmt()
-                .with_env_filter(env_filter)
-                .json()
-                .init();
-        }
-        _ => {
-            tracing_subscriber::fmt()
-                .with_env_filter(env_filter)
-                .pretty()
-                .init();
-        }
-    }
+    // ── Load configuration ───────────────────────────────────────────────────
+    let config = DeepMailConfig::load()?;
+    tracing::info!("Configuration loaded");
 
-    // Generate a unique consumer name for this worker instance
-    let consumer_name = format!(
-        "worker-{}-{}",
-        hostname::get()
-            .map(|h| h.to_string_lossy().to_string())
-            .unwrap_or_else(|_| "unknown".into()),
-        process::id()
-    );
+    // ── Initialize database pool ─────────────────────────────────────────────
+    let db_pool = db::create_pool(&config.database)?;
+    tracing::info!("Database pool initialized");
 
-    tracing::info!(consumer = %consumer_name, "DeepMail Worker starting...");
-
-    // Connect to Redis
+    // ── Connect to Redis ─────────────────────────────────────────────────────
     let mut queue = RedisQueue::new(&config.redis).await?;
-    tracing::info!("Connected to Redis");
+    tracing::info!("Redis connection established");
 
-    // ── Main consumer loop ───────────────────────────────────────────────────
-    tracing::info!("Waiting for jobs...");
+    // ── Generate unique consumer name ────────────────────────────────────────
+    let hostname = hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+    let consumer_name = format!("worker-{}-{}", hostname, std::process::id());
+    tracing::info!(consumer = %consumer_name, "Worker identity established");
+
+    // ── Main processing loop ─────────────────────────────────────────────────
+    tracing::info!("Entering job processing loop (email_analysis queue)...");
 
     loop {
-        // Block for up to 5 seconds waiting for new jobs
-        match queue.dequeue_job(&consumer_name, 5000).await {
+        // Block for up to 5 seconds waiting for a job
+        let job_result = queue
+            .dequeue_from(QUEUE_EMAIL_ANALYSIS, &consumer_name, 5000)
+            .await;
+
+        match job_result {
             Ok(Some((entry_id, job))) => {
                 tracing::info!(
                     job_id = %job.id,
                     job_type = %job.job_type,
-                    entry_id = %entry_id,
                     "Job received"
                 );
 
-                // ── Phase 1: Just log the job ──────────────────────────────
-                // Future phases will implement the full analysis pipeline:
-                // 1. Header parsing
-                // 2. IOC extraction
-                // 3. Parallel: URL analysis, attachment analysis, threat intel
-                // 4. Graph correlation
-                // 5. Similarity detection
-                // 6. Threat scoring
-                // 7. Campaign assignment
-                // 8. Store results
-                // 9. Emit WebSocket update
+                // Parse the job payload
+                let payload: serde_json::Value = match serde_json::from_str(&job.payload) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::error!(
+                            job_id = %job.id,
+                            error = %e,
+                            "Failed to parse job payload — acknowledging and skipping"
+                        );
+                        pipeline::mark_failed(&db_pool, &job.id, &format!("Invalid payload: {e}"));
+                        let _ = queue.ack_on(QUEUE_EMAIL_ANALYSIS, &entry_id).await;
+                        continue;
+                    }
+                };
 
-                tracing::info!(
-                    job_id = %job.id,
-                    payload = %job.payload,
-                    "Processing job (Phase 1: skeleton)"
-                );
+                // Build pipeline context
+                let email_id = payload["email_id"]
+                    .as_str()
+                    .unwrap_or(&job.id)
+                    .to_string();
+                let quarantine_path = payload["quarantine_path"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+                let sha256 = payload["sha256"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+                let original_name = payload["original_name"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
 
-                // Acknowledge the job
-                if let Err(e) = queue.ack_job(&entry_id).await {
+                let ctx = PipelineContext {
+                    email_id: email_id.clone(),
+                    quarantine_path,
+                    sha256,
+                    original_name,
+                    db_pool: db_pool.clone(),
+                };
+
+                // Run the full analysis pipeline
+                match pipeline::run_pipeline(&ctx).await {
+                    Ok(()) => {
+                        tracing::info!(
+                            email_id = %email_id,
+                            "Pipeline completed successfully"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            email_id = %email_id,
+                            error = %e,
+                            "Pipeline failed"
+                        );
+                        let _ = pipeline::mark_failed(&db_pool, &email_id, &e.to_string());
+                    }
+                }
+
+                // Acknowledge the job regardless of success/failure
+                // (failed jobs are tracked in the DB, not re-queued)
+                if let Err(e) = queue.ack_on(QUEUE_EMAIL_ANALYSIS, &entry_id).await {
                     tracing::error!(
                         entry_id = %entry_id,
                         error = %e,
                         "Failed to acknowledge job"
                     );
-                } else {
-                    tracing::info!(
-                        job_id = %job.id,
-                        "Job acknowledged"
-                    );
                 }
             }
             Ok(None) => {
-                // No jobs available, continue polling
-                tracing::trace!("No jobs available, polling...");
+                // No job available — continue loop (block timeout expired)
+                continue;
             }
             Err(e) => {
-                tracing::error!(error = %e, "Error dequeuing job");
-                // Back off on errors to avoid tight error loops
-                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                tracing::error!(error = %e, "Error dequeuing job, backing off...");
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
         }
     }

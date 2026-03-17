@@ -21,14 +21,32 @@ pub struct Email {
     pub submitted_by: Option<String>,
     pub submitted_at: String,
     pub status: EmailStatus,
+    pub current_stage: Option<String>,
+    pub stage_started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub error_message: Option<String>,
 }
 
-/// Processing status of an email.
+/// Processing status of an email — full state machine.
+///
+/// State transitions:
+/// ```text
+/// Queued → Processing → AnalyzingHeaders → ExtractingIocs
+///   → UrlAnalysis (parallel) → AttachmentAnalysis (parallel)
+///   → Scoring → Completed
+///
+/// Any state → Failed (on error)
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum EmailStatus {
     Queued,
     Processing,
+    AnalyzingHeaders,
+    ExtractingIocs,
+    UrlAnalysis,
+    AttachmentAnalysis,
+    Scoring,
     Completed,
     Failed,
 }
@@ -38,6 +56,11 @@ impl std::fmt::Display for EmailStatus {
         match self {
             EmailStatus::Queued => write!(f, "queued"),
             EmailStatus::Processing => write!(f, "processing"),
+            EmailStatus::AnalyzingHeaders => write!(f, "analyzing_headers"),
+            EmailStatus::ExtractingIocs => write!(f, "extracting_iocs"),
+            EmailStatus::UrlAnalysis => write!(f, "url_analysis"),
+            EmailStatus::AttachmentAnalysis => write!(f, "attachment_analysis"),
+            EmailStatus::Scoring => write!(f, "scoring"),
             EmailStatus::Completed => write!(f, "completed"),
             EmailStatus::Failed => write!(f, "failed"),
         }
@@ -50,11 +73,52 @@ impl std::str::FromStr for EmailStatus {
         match s {
             "queued" => Ok(EmailStatus::Queued),
             "processing" => Ok(EmailStatus::Processing),
+            "analyzing_headers" => Ok(EmailStatus::AnalyzingHeaders),
+            "extracting_iocs" => Ok(EmailStatus::ExtractingIocs),
+            "url_analysis" => Ok(EmailStatus::UrlAnalysis),
+            "attachment_analysis" => Ok(EmailStatus::AttachmentAnalysis),
+            "scoring" => Ok(EmailStatus::Scoring),
             "completed" => Ok(EmailStatus::Completed),
             "failed" => Ok(EmailStatus::Failed),
             other => Err(format!("Unknown email status: {other}")),
         }
     }
+}
+
+impl EmailStatus {
+    /// Validate that a state transition is allowed.
+    pub fn can_transition_to(&self, next: &EmailStatus) -> bool {
+        matches!(
+            (self, next),
+            // Normal forward progression
+            (EmailStatus::Queued, EmailStatus::Processing)
+                | (EmailStatus::Processing, EmailStatus::AnalyzingHeaders)
+                | (EmailStatus::AnalyzingHeaders, EmailStatus::ExtractingIocs)
+                | (EmailStatus::ExtractingIocs, EmailStatus::UrlAnalysis)
+                | (EmailStatus::ExtractingIocs, EmailStatus::AttachmentAnalysis)
+                | (EmailStatus::UrlAnalysis, EmailStatus::AttachmentAnalysis)
+                | (EmailStatus::UrlAnalysis, EmailStatus::Scoring)
+                | (EmailStatus::AttachmentAnalysis, EmailStatus::UrlAnalysis)
+                | (EmailStatus::AttachmentAnalysis, EmailStatus::Scoring)
+                | (EmailStatus::Scoring, EmailStatus::Completed)
+                // Any state can transition to Failed
+                | (_, EmailStatus::Failed)
+        )
+    }
+}
+
+// ─── Job Progress ─────────────────────────────────────────────────────────────
+
+/// Tracks progress of an individual pipeline stage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobProgress {
+    pub id: String,
+    pub email_id: String,
+    pub stage: String,
+    pub status: String,
+    pub started_at: String,
+    pub completed_at: Option<String>,
+    pub details: Option<String>,
 }
 
 // ─── Attachment ───────────────────────────────────────────────────────────────
@@ -76,7 +140,7 @@ pub struct Attachment {
 // ─── IOC ──────────────────────────────────────────────────────────────────────
 
 /// Type of Indicator of Compromise.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum IocType {
     Ip,
@@ -150,6 +214,32 @@ pub struct CampaignCluster {
     pub updated_at: String,
 }
 
+// ─── Threat Score ─────────────────────────────────────────────────────────────
+
+/// Multi-dimensional threat score output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreatScore {
+    /// Overall weighted score (0.0 - 100.0).
+    pub total: f64,
+    /// Confidence in the score (0.0 - 1.0).
+    pub confidence: f64,
+    /// Per-category breakdown.
+    pub breakdown: ScoreBreakdown,
+}
+
+/// Per-category score breakdown.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScoreBreakdown {
+    /// SPF/DKIM/DMARC failures, sender spoofing.
+    pub identity: f64,
+    /// Suspicious IPs, known-bad domains.
+    pub infrastructure: f64,
+    /// IOC density, phishing keywords.
+    pub content: f64,
+    /// High entropy files, suspicious types.
+    pub attachment: f64,
+}
+
 // ─── API Response Types ───────────────────────────────────────────────────────
 
 /// Response for a successful upload.
@@ -159,6 +249,8 @@ pub struct UploadResponse {
     pub job_id: String,
     pub status: String,
     pub message: String,
+    /// True if this file was already analyzed (dedup hit).
+    pub deduplicated: bool,
 }
 
 /// Response for health check.

@@ -1,30 +1,33 @@
-//! Secure file upload endpoint.
+//! Secure file upload endpoint with deduplication.
 //!
 //! # Data Flow
 //! 1. Receive multipart form data
 //! 2. Extract file bytes and filename
 //! 3. Run multi-layer validation (extension, size, magic bytes, MIME, zip bomb)
-//! 4. Write to quarantine (UUID renamed, 0o400 permissions)
-//! 5. Compute SHA-256 hash
-//! 6. Insert email record into SQLite
-//! 7. Enqueue analysis job to Redis
-//! 8. Return 202 Accepted with job ID
+//! 4. Compute SHA-256 hash
+//! 5. **Deduplication check**: if hash already analyzed, return cached result
+//! 6. Write to quarantine (UUID renamed, 0o400 permissions)
+//! 7. Insert email record into SQLite
+//! 8. Enqueue analysis job to Redis
+//! 9. Log audit event
+//! 10. Return 202 Accepted with job ID
 //!
 //! # Security
 //! - All validation runs BEFORE any disk write
+//! - Dedup check prevents re-processing known files
 //! - Errors are logged with full detail server-side but return safe messages
-//! - File bytes are held in memory only during validation (bounded by size limit)
-//! - No original filenames used in storage
 
 use axum::extract::{Multipart, State};
 use axum::http::StatusCode;
 use axum::routing::post;
 use axum::{Json, Router};
 
+use deepmail_common::audit;
 use deepmail_common::errors::DeepMailError;
 use deepmail_common::models::{new_id, now_utc, UploadResponse};
-use deepmail_common::queue::Job;
+use deepmail_common::queue::{Job, QUEUE_EMAIL_ANALYSIS};
 use deepmail_common::upload::{quarantine, validation};
+use deepmail_common::utils;
 
 use crate::state::AppState;
 
@@ -64,7 +67,46 @@ async fn upload_handler(
         "File validation passed"
     );
 
-    // ── Step 3: Quarantine the file ──────────────────────────────────────────
+    // ── Step 3: Compute SHA-256 hash early for dedup ─────────────────────────
+    let sha256 = utils::sha256_hash(&validated.data);
+
+    // ── Step 4: Deduplication check ──────────────────────────────────────────
+    {
+        let conn = state.db_pool().get()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, status FROM emails WHERE sha256_hash = ?1 AND status = 'completed' LIMIT 1"
+        )?;
+
+        let existing: Option<(String, String)> = stmt
+            .query_row(rusqlite::params![sha256], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .ok();
+
+        if let Some((existing_id, _status)) = existing {
+            tracing::info!(
+                existing_id = %existing_id,
+                sha256 = %sha256,
+                "Deduplication hit — returning cached result"
+            );
+
+            // Log the dedup event
+            let _ = audit::log_dedup(state.db_pool(), &sha256, &existing_id);
+
+            return Ok((
+                StatusCode::OK,
+                Json(UploadResponse {
+                    email_id: existing_id,
+                    job_id: String::new(),
+                    status: "completed".to_string(),
+                    message: "File already analyzed (deduplicated)".to_string(),
+                    deduplicated: true,
+                }),
+            ));
+        }
+    }
+
+    // ── Step 5: Quarantine the file ──────────────────────────────────────────
     let quarantined = quarantine::quarantine_file(
         state.quarantine_dir(),
         &validated.data,
@@ -72,20 +114,20 @@ async fn upload_handler(
 
     tracing::info!(
         quarantine_name = %quarantined.quarantine_name,
-        sha256 = %quarantined.sha256,
+        sha256 = %sha256,
         "File quarantined"
     );
 
-    // ── Step 4: Insert email record into SQLite ──────────────────────────────
+    // ── Step 6: Insert email record into SQLite ──────────────────────────────
     let email_id = new_id();
     let quarantine_path_str = quarantined.path.to_string_lossy().to_string();
-    let sha256 = quarantined.sha256.clone();
     let file_size = validated.size as i64;
     let original_name = validated.sanitized_name.clone();
     let submitted_at = now_utc();
 
     {
         let email_id = email_id.clone();
+        let sha256 = sha256.clone();
         let conn = state.db_pool().get()?;
 
         conn.execute(
@@ -103,12 +145,12 @@ async fn upload_handler(
         )?;
     }
 
-    tracing::info!(
-        email_id = %email_id,
-        "Email record inserted"
-    );
+    tracing::info!(email_id = %email_id, "Email record inserted");
 
-    // ── Step 5: Enqueue analysis job in Redis ────────────────────────────────
+    // ── Step 7: Log audit event ──────────────────────────────────────────────
+    let _ = audit::log_upload(state.db_pool(), &email_id, &original_name, &sha256, None);
+
+    // ── Step 8: Enqueue analysis job to email_analysis queue ──────────────────
     let job = Job {
         id: email_id.clone(),
         job_type: "email_analysis".to_string(),
@@ -123,32 +165,28 @@ async fn upload_handler(
 
     let job_entry_id = {
         let mut queue = state.redis_queue().await;
-        queue.enqueue_job(&job).await?
+        queue.enqueue_to(QUEUE_EMAIL_ANALYSIS, &job).await?
     };
 
     tracing::info!(
         email_id = %email_id,
         job_entry = %job_entry_id,
-        "Analysis job enqueued"
+        "Analysis job enqueued to email_analysis queue"
     );
 
-    // ── Step 6: Return success response ──────────────────────────────────────
+    // ── Step 9: Return success response ──────────────────────────────────────
     let response = UploadResponse {
         email_id: email_id.clone(),
         job_id: job_entry_id,
         status: "queued".to_string(),
         message: "Email submitted for analysis".to_string(),
+        deduplicated: false,
     };
 
     Ok((StatusCode::ACCEPTED, Json(response)))
 }
 
 /// Extract the file field from multipart form data.
-///
-/// # Security
-/// - Only accepts a field named `file`
-/// - Limits bytes read to the configured maximum (enforced by Axum body limit)
-/// - Returns an error if no file field is found
 async fn extract_file_field(
     multipart: &mut Multipart,
 ) -> Result<(String, Vec<u8>), DeepMailError> {

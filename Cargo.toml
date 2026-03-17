@@ -54,6 +54,13 @@ config = { version = "0.14", features = ["toml"] }
 # HTTP types
 http = "1"
 
+# Email parsing
+mailparse = "0.15"
+
+# Pattern matching
+regex = "1"
+lazy_static = "1"
+
 [profile.release]
 opt-level = 3
 lto = true

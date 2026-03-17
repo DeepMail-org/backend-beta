@@ -1,6 +1,7 @@
 //! Redis queue module using Redis Streams for job orchestration.
 //!
 //! # Design
+//! - Supports multiple named streams (email_analysis, sandbox)
 //! - Uses XADD to enqueue jobs to a named stream
 //! - Uses XREADGROUP for consumer-group-based dequeuing
 //! - Jobs are acknowledged after successful processing (XACK)
@@ -14,8 +15,13 @@ use redis::aio::MultiplexedConnection;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 
+use crate::cache::ThreatCache;
 use crate::config::RedisConfig;
 use crate::errors::DeepMailError;
+
+/// Well-known queue names.
+pub const QUEUE_EMAIL_ANALYSIS: &str = "deepmail:queue:email_analysis";
+pub const QUEUE_SANDBOX: &str = "deepmail:queue:sandbox";
 
 /// Represents a job to be processed by workers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,11 +36,13 @@ pub struct Job {
     pub created_at: String,
 }
 
-/// Wrapper around a Redis multiplexed connection.
+/// Wrapper around Redis providing multi-stream queue and cache access.
 #[derive(Clone)]
 pub struct RedisQueue {
     conn: MultiplexedConnection,
-    stream_name: String,
+    /// Default stream name (from config).
+    default_stream: String,
+    /// Consumer group name.
     consumer_group: String,
 }
 
@@ -51,28 +59,38 @@ impl RedisQueue {
 
         let mut queue = Self {
             conn,
-            stream_name: config.stream_name.clone(),
+            default_stream: config.stream_name.clone(),
             consumer_group: config.consumer_group.clone(),
         };
 
-        // Create the consumer group if it doesn't exist.
-        // The `$` means only read new messages (not historical ones).
-        queue.ensure_consumer_group().await?;
+        // Ensure consumer groups exist on all known streams
+        queue
+            .ensure_consumer_group_on(&config.stream_name)
+            .await?;
+        queue
+            .ensure_consumer_group_on(QUEUE_EMAIL_ANALYSIS)
+            .await?;
+        queue.ensure_consumer_group_on(QUEUE_SANDBOX).await?;
 
         tracing::info!(
-            stream = %config.stream_name,
+            default_stream = %config.stream_name,
             group = %config.consumer_group,
-            "Redis queue connection established"
+            "Redis queue connection established (multi-stream)"
         );
 
         Ok(queue)
     }
 
-    /// Ensure the consumer group exists on the stream.
-    async fn ensure_consumer_group(&mut self) -> Result<(), DeepMailError> {
+    /// Get a `ThreatCache` instance sharing this Redis connection.
+    pub fn cache(&self) -> ThreatCache {
+        ThreatCache::new(self.conn.clone())
+    }
+
+    /// Ensure the consumer group exists on a specific stream.
+    async fn ensure_consumer_group_on(&mut self, stream: &str) -> Result<(), DeepMailError> {
         let result: Result<(), redis::RedisError> = redis::cmd("XGROUP")
             .arg("CREATE")
-            .arg(&self.stream_name)
+            .arg(stream)
             .arg(&self.consumer_group)
             .arg("$")
             .arg("MKSTREAM")
@@ -81,22 +99,14 @@ impl RedisQueue {
 
         match result {
             Ok(()) => {
-                tracing::info!(
-                    stream = %self.stream_name,
-                    group = %self.consumer_group,
-                    "Consumer group created"
-                );
+                tracing::info!(stream = %stream, group = %self.consumer_group, "Consumer group created");
             }
             Err(e) if e.to_string().contains("BUSYGROUP") => {
-                tracing::debug!(
-                    stream = %self.stream_name,
-                    group = %self.consumer_group,
-                    "Consumer group already exists"
-                );
+                tracing::debug!(stream = %stream, "Consumer group already exists");
             }
             Err(e) => {
                 return Err(DeepMailError::Redis(format!(
-                    "Failed to create consumer group: {e}"
+                    "Failed to create consumer group on '{stream}': {e}"
                 )));
             }
         }
@@ -104,17 +114,20 @@ impl RedisQueue {
         Ok(())
     }
 
-    /// Enqueue a job to the Redis stream via XADD.
-    ///
-    /// Returns the stream entry ID.
+    /// Enqueue a job to the default stream via XADD.
     pub async fn enqueue_job(&mut self, job: &Job) -> Result<String, DeepMailError> {
+        self.enqueue_to(&self.default_stream.clone(), job).await
+    }
+
+    /// Enqueue a job to a specific named stream.
+    pub async fn enqueue_to(&mut self, stream: &str, job: &Job) -> Result<String, DeepMailError> {
         let job_json = serde_json::to_string(job)?;
 
         let entry_id: String = self
             .conn
             .xadd(
-                &self.stream_name,
-                "*", // Auto-generate entry ID
+                stream,
+                "*",
                 &[
                     ("job_id", job.id.as_str()),
                     ("job_type", job.job_type.as_str()),
@@ -122,11 +135,12 @@ impl RedisQueue {
                 ],
             )
             .await
-            .map_err(|e| DeepMailError::Redis(format!("Failed to enqueue job: {e}")))?;
+            .map_err(|e| DeepMailError::Redis(format!("Failed to enqueue job to '{stream}': {e}")))?;
 
         tracing::info!(
             job_id = %job.id,
             job_type = %job.job_type,
+            stream = %stream,
             stream_entry = %entry_id,
             "Job enqueued"
         );
@@ -134,12 +148,20 @@ impl RedisQueue {
         Ok(entry_id)
     }
 
-    /// Dequeue a job from the Redis stream using XREADGROUP.
-    ///
-    /// `consumer_name` should uniquely identify this worker instance.
-    /// `block_ms` is how long to block waiting for new messages (0 = indefinite).
+    /// Dequeue a job from the default stream using XREADGROUP.
     pub async fn dequeue_job(
         &mut self,
+        consumer_name: &str,
+        block_ms: usize,
+    ) -> Result<Option<(String, Job)>, DeepMailError> {
+        self.dequeue_from(&self.default_stream.clone(), consumer_name, block_ms)
+            .await
+    }
+
+    /// Dequeue a job from a specific named stream.
+    pub async fn dequeue_from(
+        &mut self,
+        stream: &str,
         consumer_name: &str,
         block_ms: usize,
     ) -> Result<Option<(String, Job)>, DeepMailError> {
@@ -150,58 +172,23 @@ impl RedisQueue {
 
         let result: redis::streams::StreamReadReply = self
             .conn
-            .xread_options(&[&self.stream_name], &[">"], &opts)
+            .xread_options(&[stream], &[">"], &opts)
             .await
-            .map_err(|e| DeepMailError::Redis(format!("Failed to dequeue job: {e}")))?;
+            .map_err(|e| DeepMailError::Redis(format!("Failed to dequeue from '{stream}': {e}")))?;
 
         for stream_key in &result.keys {
             for entry in &stream_key.ids {
                 let entry_id = entry.id.clone();
 
-                let job_id: String = entry
-                    .map
-                    .get("job_id")
-                    .and_then(|v| match v {
-                        redis::Value::Data(bytes) => {
-                            String::from_utf8(bytes.clone()).ok()
-                        }
-                        _ => None,
-                    })
-                    .ok_or_else(|| {
-                        DeepMailError::Redis("Missing job_id in stream entry".to_string())
-                    })?;
-
-                let job_type: String = entry
-                    .map
-                    .get("job_type")
-                    .and_then(|v| match v {
-                        redis::Value::Data(bytes) => {
-                            String::from_utf8(bytes.clone()).ok()
-                        }
-                        _ => None,
-                    })
-                    .ok_or_else(|| {
-                        DeepMailError::Redis("Missing job_type in stream entry".to_string())
-                    })?;
-
-                let payload: String = entry
-                    .map
-                    .get("payload")
-                    .and_then(|v| match v {
-                        redis::Value::Data(bytes) => {
-                            String::from_utf8(bytes.clone()).ok()
-                        }
-                        _ => None,
-                    })
-                    .ok_or_else(|| {
-                        DeepMailError::Redis("Missing payload in stream entry".to_string())
-                    })?;
+                let job_id = extract_field(&entry.map, "job_id")?;
+                let job_type = extract_field(&entry.map, "job_type")?;
+                let payload = extract_field(&entry.map, "payload")?;
 
                 let job = Job {
                     id: job_id,
                     job_type,
-                    payload: payload.clone(),
-                    created_at: String::new(), // Not stored in stream fields
+                    payload,
+                    created_at: String::new(),
                 };
 
                 return Ok(Some((entry_id, job)));
@@ -211,15 +198,20 @@ impl RedisQueue {
         Ok(None)
     }
 
-    /// Acknowledge a processed job (XACK).
+    /// Acknowledge a processed job (XACK) on the default stream.
     pub async fn ack_job(&mut self, entry_id: &str) -> Result<(), DeepMailError> {
+        self.ack_on(&self.default_stream.clone(), entry_id).await
+    }
+
+    /// Acknowledge a processed job on a specific stream.
+    pub async fn ack_on(&mut self, stream: &str, entry_id: &str) -> Result<(), DeepMailError> {
         let _: i64 = self
             .conn
-            .xack(&self.stream_name, &self.consumer_group, &[entry_id])
+            .xack(stream, &self.consumer_group, &[entry_id])
             .await
             .map_err(|e| DeepMailError::Redis(format!("Failed to ACK job: {e}")))?;
 
-        tracing::debug!(entry_id = %entry_id, "Job acknowledged");
+        tracing::debug!(stream = %stream, entry_id = %entry_id, "Job acknowledged");
         Ok(())
     }
 
@@ -232,4 +224,17 @@ impl RedisQueue {
 
         Ok(pong == "PONG")
     }
+}
+
+/// Extract a string field from a Redis stream entry map.
+fn extract_field(
+    map: &std::collections::HashMap<String, redis::Value>,
+    field: &str,
+) -> Result<String, DeepMailError> {
+    map.get(field)
+        .and_then(|v| match v {
+            redis::Value::Data(bytes) => String::from_utf8(bytes.clone()).ok(),
+            _ => None,
+        })
+        .ok_or_else(|| DeepMailError::Redis(format!("Missing '{field}' in stream entry")))
 }

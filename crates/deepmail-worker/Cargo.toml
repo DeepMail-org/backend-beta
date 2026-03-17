@@ -15,7 +15,19 @@ deepmail-common = { path = "../deepmail-common" }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 redis = { workspace = true }
+rusqlite = { workspace = true }
+r2d2 = { workspace = true }
+r2d2_sqlite = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+infer = { workspace = true }
+regex = { workspace = true }
+lazy_static = { workspace = true }
+mailparse = { workspace = true }
 hostname = "0.4"

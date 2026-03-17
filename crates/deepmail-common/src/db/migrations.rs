@@ -192,6 +192,32 @@ const MIGRATIONS: &[Migration] = &[
             CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
         ",
     },
+    Migration {
+        name: "011_add_job_progress_to_emails",
+        sql: "
+            ALTER TABLE emails ADD COLUMN current_stage TEXT;
+            ALTER TABLE emails ADD COLUMN stage_started_at TEXT;
+            ALTER TABLE emails ADD COLUMN completed_at TEXT;
+            ALTER TABLE emails ADD COLUMN error_message TEXT;
+        ",
+    },
+    Migration {
+        name: "012_create_job_progress",
+        sql: "
+            CREATE TABLE IF NOT EXISTS job_progress (
+                id              TEXT PRIMARY KEY NOT NULL,
+                email_id        TEXT NOT NULL,
+                stage           TEXT NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'started',
+                started_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                completed_at    TEXT,
+                details         TEXT,
+                FOREIGN KEY (email_id) REFERENCES emails(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_job_progress_email ON job_progress(email_id);
+            CREATE INDEX IF NOT EXISTS idx_job_progress_stage ON job_progress(stage);
+        ",
+    },
 ];
 
 /// Run all pending migrations in order.

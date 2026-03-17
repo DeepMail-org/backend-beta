@@ -25,3 +25,5 @@ infer = { workspace = true }
 config = { workspace = true }
 axum = { workspace = true }
 http = { workspace = true }
+regex = { workspace = true }
+lazy_static = { workspace = true }
