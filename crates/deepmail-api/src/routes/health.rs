@@ -19,16 +19,12 @@ pub fn routes() -> Router<AppState> {
 /// `GET /api/v1/health`
 ///
 /// Returns JSON with connectivity status for database and Redis.
-async fn health_check(
-    State(state): State<AppState>,
-) -> Json<HealthResponse> {
+async fn health_check(State(state): State<AppState>) -> Json<HealthResponse> {
     // Check database connectivity
     let db_healthy = state
         .db_pool()
         .get()
-        .map(|conn| {
-            conn.execute_batch("SELECT 1").is_ok()
-        })
+        .map(|conn| conn.execute_batch("SELECT 1").is_ok())
         .unwrap_or(false);
 
     // Check Redis connectivity

@@ -18,6 +18,9 @@ pub struct AppConfig {
     pub security: SecurityConfig,
     pub logging: LoggingConfig,
     pub cache: CacheConfig,
+    pub pipeline: PipelineConfig,
+    pub worker: WorkerConfig,
+    pub sandbox: SandboxConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -93,9 +96,102 @@ pub struct CacheConfig {
     pub hash_ttl_secs: u64,
 }
 
-fn default_ip_ttl() -> u64 { 3600 }
-fn default_domain_ttl() -> u64 { 3600 }
-fn default_hash_ttl() -> u64 { 86400 }
+#[derive(Debug, Clone, Deserialize)]
+pub struct PipelineConfig {
+    #[serde(default = "default_url_analysis_timeout_ms")]
+    pub url_analysis_timeout_ms: u64,
+    #[serde(default = "default_attachment_analysis_timeout_ms")]
+    pub attachment_analysis_timeout_ms: u64,
+    #[serde(default = "default_stage_retry_attempts")]
+    pub stage_retry_attempts: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WorkerConfig {
+    #[serde(default = "default_max_concurrent_jobs")]
+    pub max_concurrent_jobs: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SandboxConfig {
+    #[serde(default = "default_sandbox_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_sandbox_backend")]
+    pub backend: String,
+    #[serde(default = "default_sandbox_queue")]
+    pub queue_stream: String,
+    #[serde(default = "default_sandbox_image")]
+    pub docker_image: String,
+    #[serde(default = "default_sandbox_network")]
+    pub docker_network: String,
+    #[serde(default = "default_sandbox_seccomp")]
+    pub seccomp_profile: String,
+    #[serde(default = "default_sandbox_execution_timeout_ms")]
+    pub execution_timeout_ms: u64,
+    #[serde(default = "default_sandbox_cpu_limit")]
+    pub cpu_limit: String,
+    #[serde(default = "default_sandbox_memory_limit")]
+    pub memory_limit: String,
+    #[serde(default = "default_sandbox_pids_limit")]
+    pub pids_limit: u32,
+    #[serde(default = "default_progress_channel")]
+    pub progress_channel: String,
+}
+
+fn default_ip_ttl() -> u64 {
+    3600
+}
+fn default_domain_ttl() -> u64 {
+    3600
+}
+fn default_hash_ttl() -> u64 {
+    86400
+}
+fn default_url_analysis_timeout_ms() -> u64 {
+    3000
+}
+fn default_attachment_analysis_timeout_ms() -> u64 {
+    5000
+}
+fn default_stage_retry_attempts() -> u32 {
+    2
+}
+fn default_max_concurrent_jobs() -> usize {
+    4
+}
+fn default_sandbox_enabled() -> bool {
+    true
+}
+fn default_sandbox_backend() -> String {
+    "docker".to_string()
+}
+fn default_sandbox_queue() -> String {
+    "deepmail:queue:sandbox".to_string()
+}
+fn default_sandbox_image() -> String {
+    "deepmail/sandbox-playwright:latest".to_string()
+}
+fn default_sandbox_network() -> String {
+    "deepmail_sandbox_net".to_string()
+}
+fn default_sandbox_seccomp() -> String {
+    "./crates/deepmail-sandbox/assets/seccomp/chromium-minimal.json".to_string()
+}
+fn default_sandbox_execution_timeout_ms() -> u64 {
+    15000
+}
+fn default_sandbox_cpu_limit() -> String {
+    "1.0".to_string()
+}
+fn default_sandbox_memory_limit() -> String {
+    "512m".to_string()
+}
+fn default_sandbox_pids_limit() -> u32 {
+    128
+}
+fn default_progress_channel() -> String {
+    "deepmail:events:progress".to_string()
+}
 
 /// Type alias so callers can use `DeepMailConfig` for the top-level config.
 pub type DeepMailConfig = AppConfig;

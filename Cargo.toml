@@ -4,6 +4,8 @@ members = [
     "crates/deepmail-api",
     "crates/deepmail-common",
     "crates/deepmail-worker",
+    "crates/deepmail-sandbox",
+    "crates/deepmail-sandbox-worker",
 ]
 
 [workspace.package]
@@ -17,7 +19,7 @@ license = "MIT"
 tokio = { version = "1", features = ["full"] }
 
 # Web framework
-axum = { version = "0.7", features = ["multipart"] }
+axum = { version = "0.7", features = ["multipart", "ws"] }
 tower = { version = "0.4" }
 tower-http = { version = "0.5", features = ["cors", "trace", "limit", "request-id"] }
 
@@ -60,6 +62,9 @@ mailparse = "0.15"
 # Pattern matching
 regex = "1"
 lazy_static = "1"
+async-trait = "0.1"
+url = "2"
+futures-util = "0.3"
 
 [profile.release]
 opt-level = 3

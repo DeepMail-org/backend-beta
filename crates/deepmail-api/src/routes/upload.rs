@@ -54,11 +54,7 @@ async fn upload_handler(
     );
 
     // ── Step 2: Validate file (all checks run before disk write) ─────────────
-    let validated = validation::validate_upload(
-        &filename,
-        &data,
-        &state.config().upload,
-    )?;
+    let validated = validation::validate_upload(&filename, &data, &state.config().upload)?;
 
     tracing::info!(
         sanitized_name = %validated.sanitized_name,
@@ -74,7 +70,7 @@ async fn upload_handler(
     {
         let conn = state.db_pool().get()?;
         let mut stmt = conn.prepare(
-            "SELECT id, status FROM emails WHERE sha256_hash = ?1 AND status = 'completed' LIMIT 1"
+            "SELECT id, status FROM emails WHERE sha256_hash = ?1 AND status = 'completed' LIMIT 1",
         )?;
 
         let existing: Option<(String, String)> = stmt
@@ -107,10 +103,7 @@ async fn upload_handler(
     }
 
     // ── Step 5: Quarantine the file ──────────────────────────────────────────
-    let quarantined = quarantine::quarantine_file(
-        state.quarantine_dir(),
-        &validated.data,
-    )?;
+    let quarantined = quarantine::quarantine_file(state.quarantine_dir(), &validated.data)?;
 
     tracing::info!(
         quarantine_name = %quarantined.quarantine_name,
@@ -187,9 +180,7 @@ async fn upload_handler(
 }
 
 /// Extract the file field from multipart form data.
-async fn extract_file_field(
-    multipart: &mut Multipart,
-) -> Result<(String, Vec<u8>), DeepMailError> {
+async fn extract_file_field(multipart: &mut Multipart) -> Result<(String, Vec<u8>), DeepMailError> {
     while let Some(field) = multipart
         .next_field()
         .await
@@ -205,16 +196,12 @@ async fn extract_file_field(
         let filename = field
             .file_name()
             .map(|s| s.to_string())
-            .ok_or_else(|| {
-                DeepMailError::Upload("File field has no filename".to_string())
-            })?;
+            .ok_or_else(|| DeepMailError::Upload("File field has no filename".to_string()))?;
 
         let data = field
             .bytes()
             .await
-            .map_err(|e| {
-                DeepMailError::Upload(format!("Failed to read file bytes: {e}"))
-            })?
+            .map_err(|e| DeepMailError::Upload(format!("Failed to read file bytes: {e}")))?
             .to_vec();
 
         return Ok((filename, data));

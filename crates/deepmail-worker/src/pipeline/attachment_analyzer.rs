@@ -26,8 +26,8 @@
 //! # Future (Dynamic Sandbox)
 //! Pass `suspicious_type == true` attachments to `sandbox_queue` for detonation.
 
-use sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use deepmail_common::cache::ThreatCache;
 use deepmail_common::db::DbPool;
@@ -65,17 +65,12 @@ pub struct AttachmentAnalysisResult {
 
 const SUSPICIOUS_EXTENSIONS: &[&str] = &[
     // Windows executables and scripts
-    ".exe", ".scr", ".pif", ".cmd", ".bat", ".ps1", ".vbs", ".js",
-    ".wsf", ".hta", ".cpl", ".msi", ".dll", ".com", ".vbe", ".jse",
-    // Archive formats used to bypass filters
-    ".iso", ".img", ".vhd", ".vhdx",
-    // Archives with embedded malware
-    ".jar", ".war",
-    // Shortcut/link files
-    ".lnk",
-    // Macro-enabled Office documents
-    ".docm", ".xlsm", ".pptm", ".dotm", ".xlam",
-    // OneNote (increasingly exploited)
+    ".exe", ".scr", ".pif", ".cmd", ".bat", ".ps1", ".vbs", ".js", ".wsf", ".hta", ".cpl", ".msi",
+    ".dll", ".com", ".vbe", ".jse", // Archive formats used to bypass filters
+    ".iso", ".img", ".vhd", ".vhdx", // Archives with embedded malware
+    ".jar", ".war", // Shortcut/link files
+    ".lnk", // Macro-enabled Office documents
+    ".docm", ".xlsm", ".pptm", ".dotm", ".xlam", // OneNote (increasingly exploited)
     ".one",
 ];
 
@@ -103,20 +98,16 @@ pub async fn analyze_attachments(
     pool: &DbPool,
     email_id: &str,
     attachments: &[ParsedAttachment],
-    mut cache: Option<&mut ThreatCache>,
+    cache: Option<&ThreatCache>,
 ) -> Result<Vec<AttachmentAnalysisResult>, DeepMailError> {
     let mut results = Vec::with_capacity(attachments.len());
 
-    // NOTE: We cannot hold `cache` as `&mut` across multiple iterations when
-    // it's a single reference, so we build an owned Option each time by
-    // splitting the logic. The borrow checker forces us to handle this carefully.
-    // In Phase 3 we can upgrade to Arc<Mutex<ThreatCache>> for true parallelism.
     for attachment in attachments {
         // Hash first — needed for cache key
         let sha256 = compute_sha256(&attachment.data);
 
         // ── Cache lookup ─────────────────────────────────────────────────────
-        if let Some(ref mut c) = cache.as_deref_mut() {
+        if let Some(c) = cache {
             match c.get_hash_lookup::<AttachmentAnalysisResult>(&sha256).await {
                 Ok(Some(mut cached)) => {
                     tracing::debug!(sha256 = %sha256, "Attachment hash cache HIT");
@@ -139,7 +130,7 @@ pub async fn analyze_attachments(
         let result = analyze_single(pool, email_id, attachment, sha256.clone())?;
 
         // ── Cache population ─────────────────────────────────────────────────
-        if let Some(c) = cache.as_deref_mut() {
+        if let Some(c) = cache {
             let _ = c.cache_hash_lookup(&sha256, &result).await;
         }
 
@@ -254,11 +245,7 @@ pub fn calculate_entropy(data: &[u8]) -> f64 {
 }
 
 /// Returns true when the file type is commonly used in malware delivery.
-fn is_suspicious_type(
-    filename: &str,
-    content_type: &str,
-    detected_mime: Option<&str>,
-) -> bool {
+fn is_suspicious_type(filename: &str, content_type: &str, detected_mime: Option<&str>) -> bool {
     let filename_lower = filename.to_lowercase();
     let is_suspicious_ext = SUSPICIOUS_EXTENSIONS
         .iter()
@@ -306,9 +293,21 @@ mod tests {
 
     #[test]
     fn test_suspicious_extension() {
-        assert!(is_suspicious_type("payload.exe", "application/octet-stream", None));
-        assert!(is_suspicious_type("macro.docm", "application/octet-stream", None));
-        assert!(is_suspicious_type("link.lnk", "application/x-ms-shortcut", None));
+        assert!(is_suspicious_type(
+            "payload.exe",
+            "application/octet-stream",
+            None
+        ));
+        assert!(is_suspicious_type(
+            "macro.docm",
+            "application/octet-stream",
+            None
+        ));
+        assert!(is_suspicious_type(
+            "link.lnk",
+            "application/x-ms-shortcut",
+            None
+        ));
         assert!(!is_suspicious_type("report.pdf", "application/pdf", None));
         assert!(!is_suspicious_type("image.png", "image/png", None));
     }

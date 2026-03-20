@@ -96,10 +96,8 @@ pub fn analyze_headers(email: &ParsedEmail) -> HeaderAnalysis {
         .find(|h| h.name == "return-path")
         .map(|h| h.value.clone());
 
-    let reply_to_mismatch = check_reply_to_mismatch(
-        email.from.as_deref(),
-        email.reply_to.as_deref(),
-    );
+    let reply_to_mismatch =
+        check_reply_to_mismatch(email.from.as_deref(), email.reply_to.as_deref());
 
     let sender = SenderInfo {
         from: email.from.clone(),
@@ -188,10 +186,7 @@ fn extract_originating_ip(hops: &[ReceivedHop]) -> Option<String> {
 
 /// Check if an IP address is in a private/reserved range.
 fn is_private_ip(ip: &str) -> bool {
-    let parts: Vec<u8> = ip
-        .split('.')
-        .filter_map(|p| p.parse().ok())
-        .collect();
+    let parts: Vec<u8> = ip.split('.').filter_map(|p| p.parse().ok()).collect();
 
     if parts.len() != 4 {
         return false;
@@ -204,7 +199,7 @@ fn is_private_ip(ip: &str) -> bool {
         | (192, 168)                    // 192.168.0.0/16
         | (127, _)                      // 127.0.0.0/8
         | (0, _)                        // 0.0.0.0/8
-        | (169, 254)                    // 169.254.0.0/16 (link-local)
+        | (169, 254) // 169.254.0.0/16 (link-local)
     )
 }
 
@@ -252,20 +247,15 @@ fn extract_auth_method(header: &str, method: &str) -> Option<AuthResult> {
     let pattern = format!("{method}=");
     if let Some(pos) = header.find(&pattern) {
         let rest = &header[pos + pattern.len()..];
-        let result: String = rest
-            .chars()
-            .take_while(|c| c.is_alphabetic())
-            .collect();
+        let result: String = rest.chars().take_while(|c| c.is_alphabetic()).collect();
 
         if !result.is_empty() {
             // Extract details in parentheses if present
-            let details = rest
-                .find('(')
-                .and_then(|start| {
-                    rest[start + 1..].find(')').map(|end| {
-                        rest[start + 1..start + 1 + end].to_string()
-                    })
-                });
+            let details = rest.find('(').and_then(|start| {
+                rest[start + 1..]
+                    .find(')')
+                    .map(|end| rest[start + 1..start + 1 + end].to_string())
+            });
 
             return Some(AuthResult {
                 method: method.to_string(),

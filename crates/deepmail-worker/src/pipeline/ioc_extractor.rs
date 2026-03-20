@@ -72,8 +72,11 @@ pub struct ExtractedIocs {
 impl ExtractedIocs {
     /// Total number of unique IOCs found.
     pub fn total_count(&self) -> usize {
-        self.ips.len() + self.domains.len() + self.urls.len()
-            + self.emails.len() + self.hashes.len()
+        self.ips.len()
+            + self.domains.len()
+            + self.urls.len()
+            + self.emails.len()
+            + self.hashes.len()
     }
 }
 
@@ -265,13 +268,13 @@ fn is_valid_public_ip(ip: &str) -> bool {
     !matches!(
         (parts[0], parts[1]),
         (10, _)
-        | (172, 16..=31)
-        | (192, 168)
-        | (127, _)
-        | (0, _)
-        | (169, 254)
-        | (255, _)
-        | (224..=239, _) // multicast
+            | (172, 16..=31)
+            | (192, 168)
+            | (127, _)
+            | (0, _)
+            | (169, 254)
+            | (255, _)
+            | (224..=239, _) // multicast
     )
 }
 

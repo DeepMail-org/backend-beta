@@ -82,10 +82,7 @@ pub fn log_dedup(
     sha256: &str,
     existing_email_id: &str,
 ) -> Result<(), DeepMailError> {
-    let details = format!(
-        "sha256={}, existing_email_id={}",
-        sha256, existing_email_id
-    );
+    let details = format!("sha256={}, existing_email_id={}", sha256, existing_email_id);
     log_audit(
         pool,
         "upload_deduplicated",
@@ -105,9 +102,7 @@ pub fn log_pipeline_stage(
     stage: &str,
     status: &str,
 ) -> Result<(), DeepMailError> {
-    let details = format!(
-        "email_id={email_id}, stage={stage}, status={status}"
-    );
+    let details = format!("email_id={email_id}, stage={stage}, status={status}");
     log_audit(
         pool,
         "pipeline_stage",
@@ -121,18 +116,7 @@ pub fn log_pipeline_stage(
 /// Convenience: log a pipeline error event.
 ///
 /// Records the full error in the audit table for forensic review.
-pub fn log_error(
-    pool: &DbPool,
-    email_id: &str,
-    error_msg: &str,
-) -> Result<(), DeepMailError> {
+pub fn log_error(pool: &DbPool, email_id: &str, error_msg: &str) -> Result<(), DeepMailError> {
     let details = format!("email_id={email_id}, error={error_msg}");
-    log_audit(
-        pool,
-        "pipeline_error",
-        "emails",
-        Some(&details),
-        None,
-        None,
-    )
+    log_audit(pool, "pipeline_error", "emails", Some(&details), None, None)
 }

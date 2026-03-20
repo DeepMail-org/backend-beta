@@ -64,7 +64,11 @@ pub fn validate_upload(
 
     // Step 3: Validate size
     validate_size(data.len(), config.max_file_size)?;
-    tracing::debug!(size = data.len(), max = config.max_file_size, "Size validated");
+    tracing::debug!(
+        size = data.len(),
+        max = config.max_file_size,
+        "Size validated"
+    );
 
     // Step 4: Validate magic bytes
     validate_magic_bytes(data, &extension)?;
@@ -100,7 +104,9 @@ fn sanitize_filename(filename: &str) -> Result<String, DeepMailError> {
         .ok_or_else(|| DeepMailError::Validation("Invalid filename".to_string()))?;
 
     if basename.is_empty() {
-        return Err(DeepMailError::Validation("Filename is empty after stripping path".to_string()));
+        return Err(DeepMailError::Validation(
+            "Filename is empty after stripping path".to_string(),
+        ));
     }
 
     // Remove null bytes and control characters
@@ -133,17 +139,12 @@ fn sanitize_filename(filename: &str) -> Result<String, DeepMailError> {
 }
 
 /// Validate that the file extension is in the allowed list.
-fn validate_extension(
-    filename: &str,
-    allowed: &[String],
-) -> Result<String, DeepMailError> {
+fn validate_extension(filename: &str, allowed: &[String]) -> Result<String, DeepMailError> {
     let extension = filename
         .rsplit('.')
         .next()
         .map(|e| e.to_lowercase())
-        .ok_or_else(|| {
-            DeepMailError::Validation("File has no extension".to_string())
-        })?;
+        .ok_or_else(|| DeepMailError::Validation("File has no extension".to_string()))?;
 
     // Guard against files with no actual extension (just a dot at the end)
     if extension.is_empty() || extension == filename.to_lowercase() {
@@ -169,7 +170,9 @@ fn validate_extension(
 /// Validate file size against the configured maximum.
 fn validate_size(size: usize, max_size: usize) -> Result<(), DeepMailError> {
     if size == 0 {
-        return Err(DeepMailError::Validation("File is empty (0 bytes)".to_string()));
+        return Err(DeepMailError::Validation(
+            "File is empty (0 bytes)".to_string(),
+        ));
     }
 
     if size > max_size {
@@ -217,8 +220,7 @@ fn validate_eml_heuristics(data: &[u8]) -> Result<(), DeepMailError> {
     // Check that the file is valid UTF-8 or at least ASCII-compatible
     let text = std::str::from_utf8(data).or_else(|_| {
         // Try to decode as lossy — some emails have mixed encodings
-        Ok::<&str, DeepMailError>(std::str::from_utf8(&data[..data.len().min(8192)])
-            .unwrap_or(""))
+        Ok::<&str, DeepMailError>(std::str::from_utf8(&data[..data.len().min(8192)]).unwrap_or(""))
     })?;
 
     if text.is_empty() {
@@ -229,13 +231,20 @@ fn validate_eml_heuristics(data: &[u8]) -> Result<(), DeepMailError> {
 
     // Check for at least one RFC 5322 header pattern
     let header_patterns = [
-        "From:", "from:",
-        "To:", "to:",
-        "Subject:", "subject:",
-        "Date:", "date:",
-        "Received:", "received:",
-        "MIME-Version:", "mime-version:",
-        "Message-ID:", "message-id:",
+        "From:",
+        "from:",
+        "To:",
+        "to:",
+        "Subject:",
+        "subject:",
+        "Date:",
+        "date:",
+        "Received:",
+        "received:",
+        "MIME-Version:",
+        "mime-version:",
+        "Message-ID:",
+        "message-id:",
     ];
 
     let has_header = header_patterns.iter().any(|h| text.contains(h));
@@ -275,9 +284,7 @@ fn validate_mime_type(data: &[u8], extension: &str) -> Result<(), DeepMailError>
             // Just reject if detected as a known binary format.
             if let Some(kind) = infer::get(data) {
                 let mime = kind.mime_type();
-                if !mime.starts_with("text/")
-                    && mime != "application/octet-stream"
-                {
+                if !mime.starts_with("text/") && mime != "application/octet-stream" {
                     return Err(DeepMailError::Validation(format!(
                         "File detected as '{mime}', which is inconsistent with .eml format"
                     )));
@@ -312,10 +319,8 @@ fn check_zip_bomb(data: &[u8]) -> Result<(), DeepMailError> {
         return Ok(());
     }
 
-    let compressed_size =
-        u32::from_le_bytes([data[18], data[19], data[20], data[21]]) as f64;
-    let uncompressed_size =
-        u32::from_le_bytes([data[22], data[23], data[24], data[25]]) as f64;
+    let compressed_size = u32::from_le_bytes([data[18], data[19], data[20], data[21]]) as f64;
+    let uncompressed_size = u32::from_le_bytes([data[22], data[23], data[24], data[25]]) as f64;
 
     if compressed_size > 0.0 {
         let ratio = uncompressed_size / compressed_size;
@@ -345,7 +350,9 @@ mod tests {
     #[test]
     fn test_sanitize_filename_strips_path() {
         // "..evil..eml" contains ".." in the filename itself → rejected
-        assert!(sanitize_filename("..evil..eml").unwrap_err().to_string()
+        assert!(sanitize_filename("..evil..eml")
+            .unwrap_err()
+            .to_string()
             .contains("path traversal"));
 
         // Pure ".." as filename → caught by traversal check

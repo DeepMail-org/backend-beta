@@ -72,8 +72,8 @@ impl RateLimiter {
 
         // Replenish tokens based on elapsed time
         let elapsed = now.duration_since(bucket.last_refill).as_secs_f64();
-        bucket.tokens = (bucket.tokens + elapsed * self.config.rate_per_second)
-            .min(self.config.burst as f64);
+        bucket.tokens =
+            (bucket.tokens + elapsed * self.config.rate_per_second).min(self.config.burst as f64);
         bucket.last_refill = now;
 
         // Try to consume one token
@@ -94,13 +94,15 @@ impl RateLimiter {
         let now = Instant::now();
         let before = buckets.len();
 
-        buckets.retain(|_, bucket| {
-            now.duration_since(bucket.last_refill).as_secs() < max_age_secs
-        });
+        buckets.retain(|_, bucket| now.duration_since(bucket.last_refill).as_secs() < max_age_secs);
 
         let removed = before - buckets.len();
         if removed > 0 {
-            tracing::debug!(removed = removed, remaining = buckets.len(), "Rate limiter cleanup");
+            tracing::debug!(
+                removed = removed,
+                remaining = buckets.len(),
+                "Rate limiter cleanup"
+            );
         }
     }
 }

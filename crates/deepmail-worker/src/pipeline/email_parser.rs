@@ -58,9 +58,8 @@ pub struct ParsedAttachment {
 
 /// Parse raw .eml bytes into a structured `ParsedEmail`.
 pub fn parse_email(raw: &[u8]) -> Result<ParsedEmail, DeepMailError> {
-    let parsed = mailparse::parse_mail(raw).map_err(|e| {
-        DeepMailError::Internal(format!("Failed to parse email: {e}"))
-    })?;
+    let parsed = mailparse::parse_mail(raw)
+        .map_err(|e| DeepMailError::Internal(format!("Failed to parse email: {e}")))?;
 
     // Extract headers
     let headers: Vec<EmailHeader> = parsed

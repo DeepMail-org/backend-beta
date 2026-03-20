@@ -25,3 +25,5 @@ chrono = { workspace = true }
 anyhow = { workspace = true }
 http = { workspace = true }
 rusqlite = { workspace = true }
+redis = { workspace = true }
+futures-util = { workspace = true }

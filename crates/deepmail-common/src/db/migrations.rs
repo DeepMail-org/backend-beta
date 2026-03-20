@@ -238,6 +238,24 @@ const MIGRATIONS: &[Migration] = &[
                 ON emails(sha256_hash, status);
         ",
     },
+    Migration {
+        name: "014_expand_sandbox_reports",
+        sql: "
+            ALTER TABLE sandbox_reports ADD COLUMN email_id TEXT;
+            ALTER TABLE sandbox_reports ADD COLUMN url TEXT;
+            ALTER TABLE sandbox_reports ADD COLUMN final_url TEXT;
+            ALTER TABLE sandbox_reports ADD COLUMN redirects TEXT;
+            ALTER TABLE sandbox_reports ADD COLUMN network_calls TEXT;
+            ALTER TABLE sandbox_reports ADD COLUMN suspicious_behavior TEXT;
+            ALTER TABLE sandbox_reports ADD COLUMN execution_time_ms INTEGER;
+            ALTER TABLE sandbox_reports ADD COLUMN status TEXT DEFAULT 'completed';
+            ALTER TABLE sandbox_reports ADD COLUMN error_message TEXT;
+
+            CREATE INDEX IF NOT EXISTS idx_sandbox_reports_email_id ON sandbox_reports(email_id);
+            CREATE INDEX IF NOT EXISTS idx_sandbox_reports_status ON sandbox_reports(status);
+            CREATE INDEX IF NOT EXISTS idx_sandbox_reports_submitted_at ON sandbox_reports(submitted_at);
+        ",
+    },
 ];
 
 /// Run all pending migrations in order.
@@ -253,15 +271,20 @@ pub fn run_migrations(conn: &Connection) -> Result<(), DeepMailError> {
                 .map_err(|e| {
                     DeepMailError::Database(format!("Failed to check migration status: {e}"))
                 })?;
-            stmt.query_row(rusqlite::params![migration.name], |row| row.get::<_, i64>(0))
-                .map(|count| count > 0)
-                .map_err(|e| {
-                    DeepMailError::Database(format!("Failed to query migration status: {e}"))
-                })?
+            stmt.query_row(rusqlite::params![migration.name], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map(|count| count > 0)
+            .map_err(|e| {
+                DeepMailError::Database(format!("Failed to query migration status: {e}"))
+            })?
         };
 
         if already_applied {
-            tracing::debug!(migration = migration.name, "Migration already applied, skipping");
+            tracing::debug!(
+                migration = migration.name,
+                "Migration already applied, skipping"
+            );
             continue;
         }
 

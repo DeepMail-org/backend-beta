@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 deepmail-common = { path = "../deepmail-common" }
+deepmail-sandbox = { path = "../deepmail-sandbox" }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

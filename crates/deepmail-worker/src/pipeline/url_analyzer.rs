@@ -53,13 +53,10 @@ pub struct UrlAnalysisResult {
 /// Sourced from threat intelligence reports and abuse statistics.
 const SUSPICIOUS_TLDS: &[&str] = &[
     // Free/abused country code TLDs
-    ".tk", ".ml", ".ga", ".cf", ".gq",
-    // Cheap generic TLDs with high abuse rates
-    ".buzz", ".xyz", ".top", ".club", ".work",
-    ".click", ".link", ".info", ".biz",
+    ".tk", ".ml", ".ga", ".cf", ".gq", // Cheap generic TLDs with high abuse rates
+    ".buzz", ".xyz", ".top", ".club", ".work", ".click", ".link", ".info", ".biz",
     // Deceptive new TLDs that confuse users
-    ".zip", ".mov", ".app",
-    // Other commonly abused
+    ".zip", ".mov", ".app", // Other commonly abused
     ".pw", ".cc", ".su",
 ];
 
@@ -77,12 +74,12 @@ const SUSPICIOUS_TLDS: &[&str] = &[
 ///             When `None` (e.g. in tests), caching is skipped.
 pub async fn analyze_urls(
     urls: &[String],
-    mut cache: Option<&mut ThreatCache>,
+    cache: Option<&ThreatCache>,
 ) -> Result<Vec<UrlAnalysisResult>, DeepMailError> {
     let mut results = Vec::with_capacity(urls.len());
 
     for url in urls {
-        let result = analyze_single_url_cached(url, cache.as_deref_mut()).await?;
+        let result = analyze_single_url_cached(url, cache).await?;
         results.push(result);
     }
 
@@ -95,18 +92,21 @@ pub async fn analyze_urls(
 /// Analyse a single URL, checking the cache first.
 async fn analyze_single_url_cached(
     url: &str,
-    mut cache: Option<&mut ThreatCache>,
+    cache: Option<&ThreatCache>,
 ) -> Result<UrlAnalysisResult, DeepMailError> {
     let domain = extract_domain(url);
     let cache_key = domain.as_deref().unwrap_or(url);
 
     // ── Cache lookup ─────────────────────────────────────────────────────────
-    if let Some(c) = cache.as_deref_mut() {
+    if let Some(c) = cache {
         if let Ok(Some(cached)) = c.get_domain_lookup::<UrlAnalysisResult>(cache_key).await {
             tracing::debug!(url = url, "URL domain cache HIT");
             // Return cached result but update the url field to the current URL
             // (same domain can appear in multiple URLs with different paths)
-            return Ok(UrlAnalysisResult { url: url.to_string(), ..cached });
+            return Ok(UrlAnalysisResult {
+                url: url.to_string(),
+                ..cached
+            });
         }
     }
 
@@ -126,10 +126,7 @@ fn analyze_single_url(url: &str) -> UrlAnalysisResult {
     let scheme = extract_scheme(url);
     let domain = extract_domain(url);
 
-    let has_ip_host = domain
-        .as_ref()
-        .map(|d| is_ip_address(d))
-        .unwrap_or(false);
+    let has_ip_host = domain.as_ref().map(|d| is_ip_address(d)).unwrap_or(false);
 
     let suspicious_tld = domain
         .as_ref()
@@ -163,10 +160,15 @@ fn analyze_single_url(url: &str) -> UrlAnalysisResult {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn extract_scheme(url: &str) -> &str {
-    if url.starts_with("https://") { "https" }
-    else if url.starts_with("http://") { "http" }
-    else if url.starts_with("ftp://") { "ftp" }
-    else { "unknown" }
+    if url.starts_with("https://") {
+        "https"
+    } else if url.starts_with("http://") {
+        "http"
+    } else if url.starts_with("ftp://") {
+        "ftp"
+    } else {
+        "unknown"
+    }
 }
 
 /// Extract the lowercase hostname from a URL.
@@ -182,15 +184,16 @@ fn extract_domain(url: &str) -> Option<String> {
         .take_while(|c| *c != '/' && *c != ':' && *c != '?' && *c != '#')
         .collect();
 
-    if domain.is_empty() { None } else { Some(domain.to_lowercase()) }
+    if domain.is_empty() {
+        None
+    } else {
+        Some(domain.to_lowercase())
+    }
 }
 
 /// Returns true if the string looks like an IPv4 address.
 fn is_ip_address(host: &str) -> bool {
-    host.split('.').count() == 4
-        && host
-            .split('.')
-            .all(|octet| octet.parse::<u8>().is_ok())
+    host.split('.').count() == 4 && host.split('.').all(|octet| octet.parse::<u8>().is_ok())
 }
 
 /// Returns true if the domain ends with a known-abused TLD.

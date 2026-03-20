@@ -118,22 +118,22 @@ async fn results_handler(
 
         stmt.query_row(rusqlite::params![email_id], |row| {
             Ok(EmailSummary {
-                id:            row.get(0)?,
+                id: row.get(0)?,
                 original_name: row.get(1)?,
-                sha256_hash:   row.get(2)?,
-                file_size:     row.get(3)?,
-                submitted_at:  row.get(4)?,
-                status:        row.get(5)?,
+                sha256_hash: row.get(2)?,
+                file_size: row.get(3)?,
+                submitted_at: row.get(4)?,
+                status: row.get(5)?,
                 current_stage: row.get(6)?,
-                completed_at:  row.get(7)?,
+                completed_at: row.get(7)?,
                 error_message: row.get(8)?,
             })
-        }).ok()
+        })
+        .ok()
     };
 
-    let email = email.ok_or_else(|| {
-        DeepMailError::NotFound(format!("Email '{email_id}' not found"))
-    })?;
+    let email =
+        email.ok_or_else(|| DeepMailError::NotFound(format!("Email '{email_id}' not found")))?;
 
     // ── 2. Fetch analysis results ──────────────────────────────────────────────
     let analysis_results: Vec<AnalysisResultEntry> = {
@@ -147,12 +147,12 @@ async fn results_handler(
         let rows = stmt.query_map(rusqlite::params![email_id], |row| {
             let data_str: String = row.get(2)?;
             Ok(AnalysisResultEntry {
-                id:           row.get(0)?,
-                result_type:  row.get(1)?,
-                data:         serde_json::from_str(&data_str).unwrap_or(serde_json::Value::Null),
+                id: row.get(0)?,
+                result_type: row.get(1)?,
+                data: serde_json::from_str(&data_str).unwrap_or(serde_json::Value::Null),
                 threat_score: row.get(3)?,
-                confidence:   row.get(4)?,
-                created_at:   row.get(5)?,
+                confidence: row.get(4)?,
+                created_at: row.get(5)?,
             })
         })?;
 
@@ -170,12 +170,12 @@ async fn results_handler(
 
         let rows = stmt.query_map(rusqlite::params![email_id], |row| {
             Ok(JobProgressEntry {
-                id:           row.get(0)?,
-                stage:        row.get(1)?,
-                status:       row.get(2)?,
-                started_at:   row.get(3)?,
+                id: row.get(0)?,
+                stage: row.get(1)?,
+                status: row.get(2)?,
+                started_at: row.get(3)?,
                 completed_at: row.get(4)?,
-                details:      row.get(5)?,
+                details: row.get(5)?,
             })
         })?;
 
@@ -194,12 +194,12 @@ async fn results_handler(
 
         let rows = stmt.query_map(rusqlite::params![email_id], |row| {
             Ok(IocEntry {
-                id:        row.get(0)?,
-                ioc_type:  row.get(1)?,
-                value:     row.get(2)?,
-                first_seen:row.get(3)?,
+                id: row.get(0)?,
+                ioc_type: row.get(1)?,
+                value: row.get(2)?,
+                first_seen: row.get(3)?,
                 last_seen: row.get(4)?,
-                metadata:  row.get(5)?,
+                metadata: row.get(5)?,
             })
         })?;
 

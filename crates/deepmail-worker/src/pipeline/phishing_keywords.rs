@@ -34,60 +34,187 @@ struct WeightedKeyword {
 /// - Generic suspicious language → 5–8 pts
 static KEYWORDS: &[WeightedKeyword] = &[
     // ── Credential theft ────────────────────────────────────────────────────
-    WeightedKeyword { phrase: "verify your account",       weight: 22.0 },
-    WeightedKeyword { phrase: "verify your identity",      weight: 22.0 },
-    WeightedKeyword { phrase: "confirm your account",      weight: 22.0 },
-    WeightedKeyword { phrase: "confirm your password",     weight: 22.0 },
-    WeightedKeyword { phrase: "update your payment",       weight: 20.0 },
-    WeightedKeyword { phrase: "enter your credentials",    weight: 20.0 },
-    WeightedKeyword { phrase: "enter your password",       weight: 20.0 },
-    WeightedKeyword { phrase: "login credentials",         weight: 18.0 },
-    WeightedKeyword { phrase: "reset your password",       weight: 15.0 },
-
+    WeightedKeyword {
+        phrase: "verify your account",
+        weight: 22.0,
+    },
+    WeightedKeyword {
+        phrase: "verify your identity",
+        weight: 22.0,
+    },
+    WeightedKeyword {
+        phrase: "confirm your account",
+        weight: 22.0,
+    },
+    WeightedKeyword {
+        phrase: "confirm your password",
+        weight: 22.0,
+    },
+    WeightedKeyword {
+        phrase: "update your payment",
+        weight: 20.0,
+    },
+    WeightedKeyword {
+        phrase: "enter your credentials",
+        weight: 20.0,
+    },
+    WeightedKeyword {
+        phrase: "enter your password",
+        weight: 20.0,
+    },
+    WeightedKeyword {
+        phrase: "login credentials",
+        weight: 18.0,
+    },
+    WeightedKeyword {
+        phrase: "reset your password",
+        weight: 15.0,
+    },
     // ── Account suspension / urgency ────────────────────────────────────────
-    WeightedKeyword { phrase: "account has been suspended", weight: 22.0 },
-    WeightedKeyword { phrase: "account suspended",          weight: 20.0 },
-    WeightedKeyword { phrase: "account has been limited",   weight: 20.0 },
-    WeightedKeyword { phrase: "unusual activity",           weight: 18.0 },
-    WeightedKeyword { phrase: "unauthorized access",        weight: 18.0 },
-    WeightedKeyword { phrase: "suspicious activity",        weight: 18.0 },
-    WeightedKeyword { phrase: "your account will be closed", weight: 22.0 },
-    WeightedKeyword { phrase: "we noticed unusual",         weight: 15.0 },
-
+    WeightedKeyword {
+        phrase: "account has been suspended",
+        weight: 22.0,
+    },
+    WeightedKeyword {
+        phrase: "account suspended",
+        weight: 20.0,
+    },
+    WeightedKeyword {
+        phrase: "account has been limited",
+        weight: 20.0,
+    },
+    WeightedKeyword {
+        phrase: "unusual activity",
+        weight: 18.0,
+    },
+    WeightedKeyword {
+        phrase: "unauthorized access",
+        weight: 18.0,
+    },
+    WeightedKeyword {
+        phrase: "suspicious activity",
+        weight: 18.0,
+    },
+    WeightedKeyword {
+        phrase: "your account will be closed",
+        weight: 22.0,
+    },
+    WeightedKeyword {
+        phrase: "we noticed unusual",
+        weight: 15.0,
+    },
     // ── Action urgency ───────────────────────────────────────────────────────
-    WeightedKeyword { phrase: "click here immediately",     weight: 20.0 },
-    WeightedKeyword { phrase: "click here now",             weight: 18.0 },
-    WeightedKeyword { phrase: "act now",                    weight: 12.0 },
-    WeightedKeyword { phrase: "act immediately",            weight: 14.0 },
-    WeightedKeyword { phrase: "immediate action required",  weight: 18.0 },
-    WeightedKeyword { phrase: "action required",            weight: 12.0 },
-    WeightedKeyword { phrase: "urgent action",              weight: 14.0 },
-    WeightedKeyword { phrase: "respond immediately",        weight: 14.0 },
-
+    WeightedKeyword {
+        phrase: "click here immediately",
+        weight: 20.0,
+    },
+    WeightedKeyword {
+        phrase: "click here now",
+        weight: 18.0,
+    },
+    WeightedKeyword {
+        phrase: "act now",
+        weight: 12.0,
+    },
+    WeightedKeyword {
+        phrase: "act immediately",
+        weight: 14.0,
+    },
+    WeightedKeyword {
+        phrase: "immediate action required",
+        weight: 18.0,
+    },
+    WeightedKeyword {
+        phrase: "action required",
+        weight: 12.0,
+    },
+    WeightedKeyword {
+        phrase: "urgent action",
+        weight: 14.0,
+    },
+    WeightedKeyword {
+        phrase: "respond immediately",
+        weight: 14.0,
+    },
     // ── Financial bait ───────────────────────────────────────────────────────
-    WeightedKeyword { phrase: "you have won",               weight: 20.0 },
-    WeightedKeyword { phrase: "congratulations! you",       weight: 18.0 },
-    WeightedKeyword { phrase: "claim your prize",           weight: 20.0 },
-    WeightedKeyword { phrase: "wire transfer",              weight: 15.0 },
-    WeightedKeyword { phrase: "bank account details",       weight: 18.0 },
-    WeightedKeyword { phrase: "payment information",        weight: 10.0 },
-    WeightedKeyword { phrase: "gift card",                  weight: 15.0 },
-    WeightedKeyword { phrase: "investment opportunity",     weight: 12.0 },
-
+    WeightedKeyword {
+        phrase: "you have won",
+        weight: 20.0,
+    },
+    WeightedKeyword {
+        phrase: "congratulations! you",
+        weight: 18.0,
+    },
+    WeightedKeyword {
+        phrase: "claim your prize",
+        weight: 20.0,
+    },
+    WeightedKeyword {
+        phrase: "wire transfer",
+        weight: 15.0,
+    },
+    WeightedKeyword {
+        phrase: "bank account details",
+        weight: 18.0,
+    },
+    WeightedKeyword {
+        phrase: "payment information",
+        weight: 10.0,
+    },
+    WeightedKeyword {
+        phrase: "gift card",
+        weight: 15.0,
+    },
+    WeightedKeyword {
+        phrase: "investment opportunity",
+        weight: 12.0,
+    },
     // ── Impersonation indicators ─────────────────────────────────────────────
-    WeightedKeyword { phrase: "your apple id",              weight: 12.0 },
-    WeightedKeyword { phrase: "your paypal",                weight: 12.0 },
-    WeightedKeyword { phrase: "your amazon account",        weight: 12.0 },
-    WeightedKeyword { phrase: "microsoft account",          weight: 10.0 },
-    WeightedKeyword { phrase: "irs notice",                 weight: 15.0 },
-
+    WeightedKeyword {
+        phrase: "your apple id",
+        weight: 12.0,
+    },
+    WeightedKeyword {
+        phrase: "your paypal",
+        weight: 12.0,
+    },
+    WeightedKeyword {
+        phrase: "your amazon account",
+        weight: 12.0,
+    },
+    WeightedKeyword {
+        phrase: "microsoft account",
+        weight: 10.0,
+    },
+    WeightedKeyword {
+        phrase: "irs notice",
+        weight: 15.0,
+    },
     // ── Generic suspicious language ──────────────────────────────────────────
-    WeightedKeyword { phrase: "do not ignore",              weight: 8.0  },
-    WeightedKeyword { phrase: "do not share this",          weight: 8.0  },
-    WeightedKeyword { phrase: "confidential",               weight: 5.0  },
-    WeightedKeyword { phrase: "dear customer",              weight: 5.0  },
-    WeightedKeyword { phrase: "dear valued customer",       weight: 8.0  },
-    WeightedKeyword { phrase: "verify now",                 weight: 10.0 },
+    WeightedKeyword {
+        phrase: "do not ignore",
+        weight: 8.0,
+    },
+    WeightedKeyword {
+        phrase: "do not share this",
+        weight: 8.0,
+    },
+    WeightedKeyword {
+        phrase: "confidential",
+        weight: 5.0,
+    },
+    WeightedKeyword {
+        phrase: "dear customer",
+        weight: 5.0,
+    },
+    WeightedKeyword {
+        phrase: "dear valued customer",
+        weight: 8.0,
+    },
+    WeightedKeyword {
+        phrase: "verify now",
+        weight: 10.0,
+    },
 ];
 
 // ─── Result type ─────────────────────────────────────────────────────────────
@@ -115,9 +242,7 @@ pub struct PhishingKeywordResult {
 ///
 /// # Returns
 /// A `PhishingKeywordResult` with all matches and a capped score.
-pub fn scan_bodies<'a>(
-    bodies: impl IntoIterator<Item = Option<&'a str>>,
-) -> PhishingKeywordResult {
+pub fn scan_bodies<'a>(bodies: impl IntoIterator<Item = Option<&'a str>>) -> PhishingKeywordResult {
     // Merge all provided text into a single lowercase buffer
     let combined: String = bodies
         .into_iter()
@@ -190,7 +315,9 @@ mod tests {
         let result = scan_text("Please verify your account to continue.");
         assert_eq!(result.match_count, 1);
         assert!(result.keyword_score > 0.0);
-        assert!(result.matched_keywords.contains(&"verify your account".to_string()));
+        assert!(result
+            .matched_keywords
+            .contains(&"verify your account".to_string()));
     }
 
     #[test]
@@ -200,7 +327,11 @@ mod tests {
                     you have won claim your prize wire transfer gift card";
         let result = scan_text(text);
         assert!(result.match_count > 3);
-        assert!(result.keyword_score <= 100.0, "score={}", result.keyword_score);
+        assert!(
+            result.keyword_score <= 100.0,
+            "score={}",
+            result.keyword_score
+        );
     }
 
     #[test]
@@ -213,7 +344,7 @@ mod tests {
     #[test]
     fn test_scan_bodies_multiple_parts() {
         let plain = Some("Dear customer, verify now.");
-        let html  = Some("<html>Account suspended.</html>");
+        let html = Some("<html>Account suspended.</html>");
         let result = scan_bodies([plain, html, None]);
         // "dear customer" + "verify now" + "account suspended" → multiple hits
         assert!(result.match_count >= 2);

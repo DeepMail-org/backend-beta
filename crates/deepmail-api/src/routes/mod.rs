@@ -5,6 +5,7 @@
 pub mod health;
 pub mod results;
 pub mod upload;
+pub mod ws_results;
 
 use axum::Router;
 
@@ -16,6 +17,6 @@ pub fn api_routes(state: AppState) -> Router {
         .merge(health::routes())
         .merge(upload::routes())
         .merge(results::routes())
+        .merge(ws_results::routes())
         .with_state(state)
 }
-

@@ -56,3 +56,24 @@ domain_ttl_secs = 3600
 # Time-to-live in seconds for cached file hash lookups (default: 24 hours)
 # Hash-based results are stable (same file = same result), so TTL is longer.
 hash_ttl_secs = 86400
+
+[pipeline]
+url_analysis_timeout_ms = 3000
+attachment_analysis_timeout_ms = 5000
+stage_retry_attempts = 2
+
+[worker]
+max_concurrent_jobs = 4
+
+[sandbox]
+enabled = true
+backend = "docker"
+queue_stream = "deepmail:queue:sandbox"
+docker_image = "deepmail/sandbox-playwright:latest"
+docker_network = "deepmail_sandbox_net"
+seccomp_profile = "./crates/deepmail-sandbox/assets/seccomp/chromium-minimal.json"
+execution_timeout_ms = 15000
+cpu_limit = "1.0"
+memory_limit = "512m"
+pids_limit = 128
+progress_channel = "deepmail:events:progress"

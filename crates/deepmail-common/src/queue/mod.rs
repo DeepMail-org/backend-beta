@@ -22,6 +22,7 @@ use crate::errors::DeepMailError;
 /// Well-known queue names.
 pub const QUEUE_EMAIL_ANALYSIS: &str = "deepmail:queue:email_analysis";
 pub const QUEUE_SANDBOX: &str = "deepmail:queue:sandbox";
+pub const CHANNEL_PROGRESS: &str = "deepmail:events:progress";
 
 /// Represents a job to be processed by workers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,12 +65,8 @@ impl RedisQueue {
         };
 
         // Ensure consumer groups exist on all known streams
-        queue
-            .ensure_consumer_group_on(&config.stream_name)
-            .await?;
-        queue
-            .ensure_consumer_group_on(QUEUE_EMAIL_ANALYSIS)
-            .await?;
+        queue.ensure_consumer_group_on(&config.stream_name).await?;
+        queue.ensure_consumer_group_on(QUEUE_EMAIL_ANALYSIS).await?;
         queue.ensure_consumer_group_on(QUEUE_SANDBOX).await?;
 
         tracing::info!(
@@ -135,7 +132,9 @@ impl RedisQueue {
                 ],
             )
             .await
-            .map_err(|e| DeepMailError::Redis(format!("Failed to enqueue job to '{stream}': {e}")))?;
+            .map_err(|e| {
+                DeepMailError::Redis(format!("Failed to enqueue job to '{stream}': {e}"))
+            })?;
 
         tracing::info!(
             job_id = %job.id,
@@ -223,6 +222,32 @@ impl RedisQueue {
             .map_err(|e| DeepMailError::Redis(format!("Redis health check failed: {e}")))?;
 
         Ok(pong == "PONG")
+    }
+
+    /// Publish a progress event to Redis pub/sub for realtime clients.
+    pub async fn publish_progress(
+        &mut self,
+        channel: &str,
+        email_id: &str,
+        stage: &str,
+        status: &str,
+        details: Option<&str>,
+    ) -> Result<(), DeepMailError> {
+        let payload = serde_json::json!({
+            "email_id": email_id,
+            "stage": stage,
+            "status": status,
+            "details": details,
+        });
+
+        let payload_str = serde_json::to_string(&payload)?;
+        let _: i64 = self
+            .conn
+            .publish(channel, payload_str)
+            .await
+            .map_err(|e| DeepMailError::Redis(format!("Failed to publish progress: {e}")))?;
+
+        Ok(())
     }
 }
 

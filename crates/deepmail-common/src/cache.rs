@@ -39,7 +39,7 @@ impl ThreatCache {
 
     /// Store a value in the cache with the default TTL.
     pub async fn set<T: Serialize>(
-        &mut self,
+        &self,
         cache_type: &str,
         key: &str,
         value: &T,
@@ -50,7 +50,7 @@ impl ThreatCache {
 
     /// Store a value in the cache with a custom TTL.
     pub async fn set_with_ttl<T: Serialize>(
-        &mut self,
+        &self,
         cache_type: &str,
         key: &str,
         value: &T,
@@ -59,8 +59,8 @@ impl ThreatCache {
         let cache_key = build_key(cache_type, key);
         let json = serde_json::to_string(value)?;
 
-        self.conn
-            .set_ex::<_, _, ()>(&cache_key, &json, ttl_secs)
+        let mut conn = self.conn.clone();
+        conn.set_ex::<_, _, ()>(&cache_key, &json, ttl_secs)
             .await
             .map_err(|e| DeepMailError::Redis(format!("Cache SET failed: {e}")))?;
 
@@ -78,14 +78,14 @@ impl ThreatCache {
     ///
     /// Returns `None` if the key doesn't exist or has expired.
     pub async fn get<T: DeserializeOwned>(
-        &mut self,
+        &self,
         cache_type: &str,
         key: &str,
     ) -> Result<Option<T>, DeepMailError> {
         let cache_key = build_key(cache_type, key);
 
-        let result: Option<String> = self
-            .conn
+        let mut conn = self.conn.clone();
+        let result: Option<String> = conn
             .get(&cache_key)
             .await
             .map_err(|e| DeepMailError::Redis(format!("Cache GET failed: {e}")))?;
@@ -104,10 +104,10 @@ impl ThreatCache {
     }
 
     /// Check if a key exists in the cache.
-    pub async fn exists(&mut self, cache_type: &str, key: &str) -> Result<bool, DeepMailError> {
+    pub async fn exists(&self, cache_type: &str, key: &str) -> Result<bool, DeepMailError> {
         let cache_key = build_key(cache_type, key);
-        let exists: bool = self
-            .conn
+        let mut conn = self.conn.clone();
+        let exists: bool = conn
             .exists(&cache_key)
             .await
             .map_err(|e| DeepMailError::Redis(format!("Cache EXISTS failed: {e}")))?;
@@ -116,10 +116,10 @@ impl ThreatCache {
     }
 
     /// Delete a key from the cache.
-    pub async fn delete(&mut self, cache_type: &str, key: &str) -> Result<(), DeepMailError> {
+    pub async fn delete(&self, cache_type: &str, key: &str) -> Result<(), DeepMailError> {
         let cache_key = build_key(cache_type, key);
-        self.conn
-            .del::<_, ()>(&cache_key)
+        let mut conn = self.conn.clone();
+        conn.del::<_, ()>(&cache_key)
             .await
             .map_err(|e| DeepMailError::Redis(format!("Cache DEL failed: {e}")))?;
 
@@ -130,7 +130,7 @@ impl ThreatCache {
 
     /// Cache an IP lookup result.
     pub async fn cache_ip_lookup<T: Serialize>(
-        &mut self,
+        &self,
         ip: &str,
         data: &T,
     ) -> Result<(), DeepMailError> {
@@ -139,7 +139,7 @@ impl ThreatCache {
 
     /// Get a cached IP lookup result.
     pub async fn get_ip_lookup<T: DeserializeOwned>(
-        &mut self,
+        &self,
         ip: &str,
     ) -> Result<Option<T>, DeepMailError> {
         self.get("ip", ip).await
@@ -147,7 +147,7 @@ impl ThreatCache {
 
     /// Cache a domain lookup result.
     pub async fn cache_domain_lookup<T: Serialize>(
-        &mut self,
+        &self,
         domain: &str,
         data: &T,
     ) -> Result<(), DeepMailError> {
@@ -156,7 +156,7 @@ impl ThreatCache {
 
     /// Get a cached domain lookup result.
     pub async fn get_domain_lookup<T: DeserializeOwned>(
-        &mut self,
+        &self,
         domain: &str,
     ) -> Result<Option<T>, DeepMailError> {
         self.get("domain", domain).await
@@ -164,7 +164,7 @@ impl ThreatCache {
 
     /// Cache a hash lookup result.
     pub async fn cache_hash_lookup<T: Serialize>(
-        &mut self,
+        &self,
         hash: &str,
         data: &T,
     ) -> Result<(), DeepMailError> {
@@ -173,7 +173,7 @@ impl ThreatCache {
 
     /// Get a cached hash lookup result.
     pub async fn get_hash_lookup<T: DeserializeOwned>(
-        &mut self,
+        &self,
         hash: &str,
     ) -> Result<Option<T>, DeepMailError> {
         self.get("hash", hash).await
@@ -188,7 +188,13 @@ fn build_key(cache_type: &str, key: &str) -> String {
     // accidental namespace collisions
     let safe_key: String = key
         .chars()
-        .map(|c| if c == ':' || c.is_whitespace() { '_' } else { c })
+        .map(|c| {
+            if c == ':' || c.is_whitespace() {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect();
     format!("{KEY_PREFIX}:{cache_type}:{safe_key}")
 }

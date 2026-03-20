@@ -29,10 +29,10 @@ use crate::pipeline::url_analyzer::UrlAnalysisResult;
 
 // ─── Dimension weights ────────────────────────────────────────────────────────
 
-const WEIGHT_IDENTITY:       f64 = 0.25;
+const WEIGHT_IDENTITY: f64 = 0.25;
 const WEIGHT_INFRASTRUCTURE: f64 = 0.25;
-const WEIGHT_CONTENT:        f64 = 0.25;
-const WEIGHT_ATTACHMENT:     f64 = 0.25;
+const WEIGHT_CONTENT: f64 = 0.25;
+const WEIGHT_ATTACHMENT: f64 = 0.25;
 
 // ─── Public entry point ───────────────────────────────────────────────────────
 
@@ -51,37 +51,37 @@ pub fn calculate_threat_score(
     attachment_results: &[AttachmentAnalysisResult],
     phishing: &PhishingKeywordResult,
 ) -> ThreatScore {
-    let identity       = score_identity(headers);
+    let identity = score_identity(headers);
     let infrastructure = score_infrastructure(iocs);
-    let content        = score_content(iocs, url_results, phishing);
-    let attachment     = score_attachment(attachment_results);
+    let content = score_content(iocs, url_results, phishing);
+    let attachment = score_attachment(attachment_results);
 
-    let total = identity       * WEIGHT_IDENTITY
-              + infrastructure * WEIGHT_INFRASTRUCTURE
-              + content        * WEIGHT_CONTENT
-              + attachment     * WEIGHT_ATTACHMENT;
+    let total = identity * WEIGHT_IDENTITY
+        + infrastructure * WEIGHT_INFRASTRUCTURE
+        + content * WEIGHT_CONTENT
+        + attachment * WEIGHT_ATTACHMENT;
 
     let confidence = calculate_confidence(headers, iocs, attachment_results, phishing);
 
     tracing::debug!(
-        total           = total,
-        confidence      = confidence,
-        identity        = identity,
-        infrastructure  = infrastructure,
-        content         = content,
-        attachment      = attachment,
+        total = total,
+        confidence = confidence,
+        identity = identity,
+        infrastructure = infrastructure,
+        content = content,
+        attachment = attachment,
         keyword_matches = phishing.match_count,
         "Threat score calculated"
     );
 
     ThreatScore {
-        total:      clamp(total),
+        total: clamp(total),
         confidence,
         breakdown: ScoreBreakdown {
-            identity:       clamp(identity),
+            identity: clamp(identity),
             infrastructure: clamp(infrastructure),
-            content:        clamp(content),
-            attachment:     clamp(attachment),
+            content: clamp(content),
+            attachment: clamp(attachment),
         },
     }
 }
@@ -96,30 +96,30 @@ fn score_identity(headers: &HeaderAnalysis) -> f64 {
 
     // SPF
     match headers.spf_result.as_ref().map(|r| r.result.as_str()) {
-        Some("fail")                          => score += 30.0,
-        Some("softfail")                      => score += 15.0,
-        Some("neutral")                       => score +=  5.0,
+        Some("fail") => score += 30.0,
+        Some("softfail") => score += 15.0,
+        Some("neutral") => score += 5.0,
         Some("temperror") | Some("permerror") => score += 10.0,
-        Some("none")                          => score +=  8.0,
-        None                                  => score +=  5.0, // missing = slightly suspicious
-        _                                     => {}             // "pass" → 0
+        Some("none") => score += 8.0,
+        None => score += 5.0, // missing = slightly suspicious
+        _ => {}               // "pass" → 0
     }
 
     // DKIM
     match headers.dkim_result.as_ref().map(|r| r.result.as_str()) {
-        Some("fail")                          => score += 25.0,
+        Some("fail") => score += 25.0,
         Some("temperror") | Some("permerror") => score += 10.0,
-        Some("none")                          => score +=  5.0,
-        None                                  => score +=  3.0,
-        _                                     => {}
+        Some("none") => score += 5.0,
+        None => score += 3.0,
+        _ => {}
     }
 
     // DMARC
     match headers.dmarc_result.as_ref().map(|r| r.result.as_str()) {
         Some("fail") => score += 30.0,
         Some("none") => score += 10.0,
-        None         => score +=  3.0,
-        _            => {}
+        None => score += 3.0,
+        _ => {}
     }
 
     // Reply-To ≠ From domain → likely spoofing
@@ -139,29 +139,29 @@ fn score_infrastructure(iocs: &ExtractedIocs) -> f64 {
     // Many unique public IPs suggest relay abuse or botnet infrastructure
     let ip_count = iocs.ips.len();
     score += match ip_count {
-        0       => 0.0,
-        1..=5   => ip_count as f64 * 1.0,
-        6..=10  => 10.0,
-        _       => 20.0,
+        0 => 0.0,
+        1..=5 => ip_count as f64 * 1.0,
+        6..=10 => 10.0,
+        _ => 20.0,
     };
 
     // Many unique domains
     let domain_count = iocs.domains.len();
     score += match domain_count {
-        0       => 0.0,
-        1..=8   => domain_count as f64 * 0.5,
-        9..=15  => 8.0,
-        _       => 15.0,
+        0 => 0.0,
+        1..=8 => domain_count as f64 * 0.5,
+        9..=15 => 8.0,
+        _ => 15.0,
     };
 
     // Overall IOC density
     let total_iocs = iocs.total_count();
     score += match total_iocs {
-        0        => 0.0,
-        1..=10   => 5.0,
-        11..=20  => 15.0,
-        21..=50  => 20.0,
-        _        => 25.0,
+        0 => 0.0,
+        1..=10 => 5.0,
+        11..=20 => 15.0,
+        21..=50 => 20.0,
+        _ => 25.0,
     };
 
     score
@@ -180,10 +180,10 @@ fn score_content(
     // URL count
     let url_count = iocs.urls.len();
     score += match url_count {
-        0       => 0.0,
-        1..=5   => 3.0,
-        6..=10  => 10.0,
-        _       => 20.0,
+        0 => 0.0,
+        1..=5 => 3.0,
+        6..=10 => 10.0,
+        _ => 20.0,
     };
 
     // Suspicious TLDs
@@ -271,22 +271,30 @@ fn calculate_confidence(
 
     // Signal: Received chain present
     possible += 1.0;
-    if !headers.received_hops.is_empty() { signals += 1.0; }
+    if !headers.received_hops.is_empty() {
+        signals += 1.0;
+    }
 
     // Signal: Auth results available
     possible += 1.0;
     if headers.spf_result.is_some()
         || headers.dkim_result.is_some()
         || headers.dmarc_result.is_some()
-    { signals += 1.0; }
+    {
+        signals += 1.0;
+    }
 
     // Signal: Sender identity resolved
     possible += 1.0;
-    if headers.sender.from.is_some() { signals += 1.0; }
+    if headers.sender.from.is_some() {
+        signals += 1.0;
+    }
 
     // Signal: IOCs found
     possible += 1.0;
-    if iocs.total_count() > 0 { signals += 1.0; }
+    if iocs.total_count() > 0 {
+        signals += 1.0;
+    }
 
     // Signal: Body available for keyword scan
     possible += 1.0;
@@ -304,7 +312,11 @@ fn calculate_confidence(
     // Phishing keyword richness bonus (non-penalising)
     let _ = phishing; // signals already counted above
 
-    if possible > 0.0 { (signals / possible).min(1.0) } else { 0.5 }
+    if possible > 0.0 {
+        (signals / possible).min(1.0)
+    } else {
+        0.5
+    }
 }
 
 // ─── Utility ──────────────────────────────────────────────────────────────────
@@ -332,9 +344,21 @@ mod tests {
                 raw: String::new(),
             }],
             originating_ip: Some("209.85.220.41".into()),
-            spf_result:  Some(AuthResult { method: "spf".into(),  result: "pass".into(), details: None }),
-            dkim_result: Some(AuthResult { method: "dkim".into(), result: "pass".into(), details: None }),
-            dmarc_result:Some(AuthResult { method: "dmarc".into(),result: "pass".into(), details: None }),
+            spf_result: Some(AuthResult {
+                method: "spf".into(),
+                result: "pass".into(),
+                details: None,
+            }),
+            dkim_result: Some(AuthResult {
+                method: "dkim".into(),
+                result: "pass".into(),
+                details: None,
+            }),
+            dmarc_result: Some(AuthResult {
+                method: "dmarc".into(),
+                result: "pass".into(),
+                details: None,
+            }),
             sender: SenderInfo {
                 from: Some("sender@example.com".into()),
                 reply_to: None,
@@ -348,9 +372,21 @@ mod tests {
         HeaderAnalysis {
             received_hops: vec![],
             originating_ip: None,
-            spf_result:  Some(AuthResult { method: "spf".into(),  result: "fail".into(), details: None }),
-            dkim_result: Some(AuthResult { method: "dkim".into(), result: "fail".into(), details: None }),
-            dmarc_result:Some(AuthResult { method: "dmarc".into(),result: "fail".into(), details: None }),
+            spf_result: Some(AuthResult {
+                method: "spf".into(),
+                result: "fail".into(),
+                details: None,
+            }),
+            dkim_result: Some(AuthResult {
+                method: "dkim".into(),
+                result: "fail".into(),
+                details: None,
+            }),
+            dmarc_result: Some(AuthResult {
+                method: "dmarc".into(),
+                result: "fail".into(),
+                details: None,
+            }),
             sender: SenderInfo {
                 from: Some("ceo@company.com".into()),
                 reply_to: Some("attacker@evil.tk".into()),
@@ -362,24 +398,31 @@ mod tests {
 
     #[test]
     fn test_clean_email_low_score() {
-        let headers  = clean_headers();
-        let iocs     = ExtractedIocs::default();
+        let headers = clean_headers();
+        let iocs = ExtractedIocs::default();
         let phishing = PhishingKeywordResult::default();
-        let score    = calculate_threat_score(&headers, &iocs, &[], &[], &phishing);
+        let score = calculate_threat_score(&headers, &iocs, &[], &[], &phishing);
 
-        assert!(score.total < 10.0, "Clean email score should be < 10, got {}", score.total);
-        assert!(score.confidence > 0.5, "Confidence should be high for complete data");
+        assert!(
+            score.total < 10.0,
+            "Clean email score should be < 10, got {}",
+            score.total
+        );
+        assert!(
+            score.confidence > 0.5,
+            "Confidence should be high for complete data"
+        );
     }
 
     #[test]
     fn test_suspicious_email_high_score() {
         let headers = failed_headers();
         let iocs = ExtractedIocs {
-            ips:     vec!["1.2.3.4".into()],
+            ips: vec!["1.2.3.4".into()],
             domains: vec!["evil.tk".into()],
-            urls:    vec!["http://1.2.3.4/payload".into()],
-            emails:  vec!["attacker@evil.tk".into()],
-            hashes:  vec![],
+            urls: vec!["http://1.2.3.4/payload".into()],
+            emails: vec!["attacker@evil.tk".into()],
+            hashes: vec![],
         };
         let url_results = vec![UrlAnalysisResult {
             url: "http://1.2.3.4/payload".into(),
@@ -399,7 +442,11 @@ mod tests {
         };
 
         let score = calculate_threat_score(&headers, &iocs, &url_results, &[], &phishing);
-        assert!(score.total > 30.0, "Suspicious email score should be > 30, got {}", score.total);
+        assert!(
+            score.total > 30.0,
+            "Suspicious email score should be > 30, got {}",
+            score.total
+        );
     }
 
     #[test]
@@ -407,11 +454,13 @@ mod tests {
         // Even with absurd input, score must stay in [0, 100]
         let headers = failed_headers();
         let iocs = ExtractedIocs {
-            ips:     (0..50).map(|i| format!("{i}.{i}.{i}.{i}")).collect(),
+            ips: (0..50).map(|i| format!("{i}.{i}.{i}.{i}")).collect(),
             domains: (0..50).map(|i| format!("evil{i}.tk")).collect(),
-            urls:    (0..50).map(|i| format!("http://evil{i}.tk/bad{i}")).collect(),
-            emails:  vec![],
-            hashes:  vec!["aabbcc".into()],
+            urls: (0..50)
+                .map(|i| format!("http://evil{i}.tk/bad{i}"))
+                .collect(),
+            emails: vec![],
+            hashes: vec!["aabbcc".into()],
         };
         let phishing = PhishingKeywordResult {
             matched_keywords: vec![],
@@ -419,7 +468,11 @@ mod tests {
             match_count: 10,
         };
         let score = calculate_threat_score(&headers, &iocs, &[], &[], &phishing);
-        assert!(score.total <= 100.0, "Score must be clamped to 100, got {}", score.total);
+        assert!(
+            score.total <= 100.0,
+            "Score must be clamped to 100, got {}",
+            score.total
+        );
         assert!(score.total >= 0.0);
     }
 }
