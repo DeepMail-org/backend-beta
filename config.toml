@@ -89,3 +89,25 @@ sandbox_executions_per_day = 100
 url_reuse_ttl_secs = 3600
 domain_reuse_ttl_secs = 1800
 sandbox_reuse_ttl_secs = 86400
+
+[observability]
+otlp_endpoint = "http://127.0.0.1:4317"
+service_namespace = "deepmail"
+
+[reliability]
+max_retry_attempts = 3
+retry_base_backoff_ms = 500
+retry_max_backoff_ms = 10000
+rate_limit_capacity = 60
+rate_limit_refill_per_sec = 10.0
+
+[retention]
+emails_ttl_days = 30
+sandbox_reports_ttl_days = 30
+logs_ttl_days = 14
+cleanup_interval_secs = 3600
+
+[circuit_breaker]
+failure_threshold = 5
+cooldown_secs = 30
+half_open_max_probes = 2

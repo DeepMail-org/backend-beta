@@ -31,8 +31,9 @@ use std::time::Duration;
 
 use deepmail_common::audit;
 use deepmail_common::cache::ThreatCache;
+use deepmail_common::circuit_breaker::CircuitBreaker;
 use deepmail_common::config::{
-    FeatureFlags, PipelineConfig, RedisConfig, SandboxConfig, TenantConfig,
+    CircuitBreakerConfig, FeatureFlags, PipelineConfig, RedisConfig, SandboxConfig, TenantConfig,
 };
 use deepmail_common::db::DbPool;
 use deepmail_common::errors::DeepMailError;
@@ -78,6 +79,8 @@ pub struct PipelineContext {
     pub user_id: Option<String>,
     /// Trace identifier propagated from API.
     pub trace_id: Option<String>,
+    /// Circuit breaker policy.
+    pub circuit_breaker: CircuitBreakerConfig,
 }
 
 // ─── Pipeline entry point ─────────────────────────────────────────────────────
@@ -238,6 +241,20 @@ pub async fn run_pipeline(ctx: &PipelineContext) -> Result<(), DeepMailError> {
         None,
     )
     .await;
+
+    if ctx.features.enable_intel_providers {
+        let breaker = CircuitBreaker::new("intel_provider", ctx.circuit_breaker.clone());
+        if breaker.allow().await {
+            if let Err(e) = simulate_external_intel_provider().await {
+                breaker.on_failure().await;
+                tracing::warn!(email_id = %ctx.email_id, error = %e, "Intel provider call failed");
+            } else {
+                breaker.on_success().await;
+            }
+        } else {
+            tracing::warn!(email_id = %ctx.email_id, "Intel provider breaker open, skipping call");
+        }
+    }
 
     // ── Stage 5 & 6: Parallel URL + Attachment analysis ───────────────────────
     update_status(&ctx.db_pool, &ctx.email_id, &EmailStatus::UrlAnalysis)?;
@@ -594,6 +611,10 @@ async fn enqueue_sandbox_jobs(
             kind: SandboxJobKind::Url,
             target: url.url.clone(),
             timeout_ms: ctx.sandbox.execution_timeout_ms,
+            user_id: ctx.user_id.clone(),
+            trace_id: ctx.trace_id.clone(),
+            attempt: 0,
+            max_attempts: ctx.pipeline.stage_retry_attempts,
         };
         let wrapped = Job {
             id: job.id.clone(),
@@ -623,6 +644,10 @@ async fn enqueue_sandbox_jobs(
             kind: SandboxJobKind::File,
             target: attachment.filename.clone(),
             timeout_ms: ctx.sandbox.execution_timeout_ms,
+            user_id: ctx.user_id.clone(),
+            trace_id: ctx.trace_id.clone(),
+            attempt: 0,
+            max_attempts: ctx.pipeline.stage_retry_attempts,
         };
         let wrapped = Job {
             id: job.id.clone(),
@@ -725,6 +750,10 @@ fn persist_url_reuse(
             );
         }
     }
+    Ok(())
+}
+
+async fn simulate_external_intel_provider() -> Result<(), DeepMailError> {
     Ok(())
 }
 

@@ -23,6 +23,12 @@ pub struct AppConfig {
     pub sandbox: SandboxConfig,
     pub features: FeatureFlags,
     pub tenant: TenantConfig,
+    pub observability: ObservabilityConfig,
+    pub reliability: ReliabilityConfig,
+    pub retention: RetentionConfig,
+    pub circuit_breaker: CircuitBreakerConfig,
+    pub backup: BackupConfig,
+    pub abuse: AbuseConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -70,6 +76,8 @@ pub struct SecurityConfig {
     pub rate_limit_burst: u32,
     /// JWT signing secret.
     pub jwt_secret: String,
+    #[serde(default)]
+    pub admin_ip_allowlist: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -164,6 +172,90 @@ pub struct TenantConfig {
     pub sandbox_reuse_ttl_secs: u64,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ObservabilityConfig {
+    #[serde(default = "default_otlp_endpoint")]
+    pub otlp_endpoint: String,
+    #[serde(default = "default_otlp_enabled")]
+    pub otlp_enabled: bool,
+    #[serde(default = "default_otlp_batch_size")]
+    pub otlp_batch_size: u32,
+    #[serde(default = "default_otlp_batch_timeout_secs")]
+    pub otlp_batch_timeout_secs: u64,
+    #[serde(default = "default_service_namespace")]
+    pub service_namespace: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReliabilityConfig {
+    #[serde(default = "default_max_retry_attempts")]
+    pub max_retry_attempts: u32,
+    #[serde(default = "default_retry_base_backoff_ms")]
+    pub retry_base_backoff_ms: u64,
+    #[serde(default = "default_retry_max_backoff_ms")]
+    pub retry_max_backoff_ms: u64,
+    #[serde(default = "default_rate_limit_capacity")]
+    pub rate_limit_capacity: u32,
+    #[serde(default = "default_rate_limit_refill_per_sec")]
+    pub rate_limit_refill_per_sec: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RetentionConfig {
+    #[serde(default = "default_retention_archive_after_days")]
+    pub archive_after_days: u32,
+    #[serde(default = "default_retention_soft_delete_after_days")]
+    pub soft_delete_after_days: u32,
+    #[serde(default = "default_retention_purge_after_days")]
+    pub purge_after_days: u32,
+    #[serde(default = "default_retention_interval_secs")]
+    pub cleanup_interval_secs: u64,
+    #[serde(default = "default_retention_logs_ttl_days")]
+    pub logs_ttl_days: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CircuitBreakerConfig {
+    #[serde(default = "default_cb_failure_threshold")]
+    pub failure_threshold: u32,
+    #[serde(default = "default_cb_cooldown_secs")]
+    pub cooldown_secs: u64,
+    #[serde(default = "default_cb_half_open_max_probes")]
+    pub half_open_max_probes: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BackupConfig {
+    #[serde(default = "default_backup_dir")]
+    pub backup_dir: String,
+    #[serde(default = "default_backup_passphrase_env_var")]
+    pub passphrase_env_var: String,
+    #[serde(default = "default_argon2_memory_kib")]
+    pub argon2_memory_kib: u32,
+    #[serde(default = "default_argon2_iterations")]
+    pub argon2_iterations: u32,
+    #[serde(default = "default_argon2_parallelism")]
+    pub argon2_parallelism: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AbuseConfig {
+    #[serde(default = "default_abuse_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_abuse_upload_velocity")]
+    pub upload_velocity_per_min: u32,
+    #[serde(default = "default_abuse_sandbox_velocity")]
+    pub sandbox_velocity_per_min: u32,
+    #[serde(default = "default_abuse_failed_threshold")]
+    pub failed_upload_threshold_5min: u32,
+    #[serde(default = "default_abuse_pattern_scan_interval")]
+    pub pattern_scan_interval_secs: u64,
+    #[serde(default = "default_abuse_repeated_hash_threshold")]
+    pub repeated_malicious_hash_threshold: u32,
+    #[serde(default = "default_abuse_sandbox_harvest_threshold")]
+    pub sandbox_harvest_threshold: u32,
+}
+
 fn default_ip_ttl() -> u64 {
     3600
 }
@@ -241,6 +333,96 @@ fn default_domain_reuse_ttl_secs() -> u64 {
 }
 fn default_sandbox_reuse_ttl_secs() -> u64 {
     86400
+}
+fn default_otlp_endpoint() -> String {
+    "http://127.0.0.1:4317".to_string()
+}
+fn default_otlp_enabled() -> bool {
+    false
+}
+fn default_otlp_batch_size() -> u32 {
+    512
+}
+fn default_otlp_batch_timeout_secs() -> u64 {
+    5
+}
+fn default_service_namespace() -> String {
+    "deepmail".to_string()
+}
+fn default_max_retry_attempts() -> u32 {
+    3
+}
+fn default_retry_base_backoff_ms() -> u64 {
+    500
+}
+fn default_retry_max_backoff_ms() -> u64 {
+    10000
+}
+fn default_rate_limit_capacity() -> u32 {
+    60
+}
+fn default_rate_limit_refill_per_sec() -> f64 {
+    10.0
+}
+fn default_retention_archive_after_days() -> u32 {
+    30
+}
+fn default_retention_soft_delete_after_days() -> u32 {
+    30
+}
+fn default_retention_purge_after_days() -> u32 {
+    30
+}
+fn default_retention_logs_ttl_days() -> u32 {
+    14
+}
+fn default_retention_interval_secs() -> u64 {
+    3600
+}
+fn default_cb_failure_threshold() -> u32 {
+    5
+}
+fn default_cb_cooldown_secs() -> u64 {
+    30
+}
+fn default_cb_half_open_max_probes() -> u32 {
+    2
+}
+fn default_backup_dir() -> String {
+    "data/backups".to_string()
+}
+fn default_backup_passphrase_env_var() -> String {
+    "DEEPMAIL_BACKUP_PASSPHRASE".to_string()
+}
+fn default_argon2_memory_kib() -> u32 {
+    65536
+}
+fn default_argon2_iterations() -> u32 {
+    3
+}
+fn default_argon2_parallelism() -> u32 {
+    4
+}
+fn default_abuse_enabled() -> bool {
+    true
+}
+fn default_abuse_upload_velocity() -> u32 {
+    20
+}
+fn default_abuse_sandbox_velocity() -> u32 {
+    15
+}
+fn default_abuse_failed_threshold() -> u32 {
+    10
+}
+fn default_abuse_pattern_scan_interval() -> u64 {
+    300
+}
+fn default_abuse_repeated_hash_threshold() -> u32 {
+    5
+}
+fn default_abuse_sandbox_harvest_threshold() -> u32 {
+    50
 }
 
 /// Type alias so callers can use `DeepMailConfig` for the top-level config.

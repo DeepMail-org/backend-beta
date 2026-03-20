@@ -44,24 +44,26 @@ async fn ws_handler(
 
     {
         let mut queue = state.redis_queue().await;
-        let (user_allowed, _) = queue
-            .check_rate_limit(
+        let (user_allowed, _, _) = queue
+            .check_rate_limit_token_bucket(
                 "user",
                 &format!("{user_id}:ws_results"),
-                state.config().security.rate_limit_burst,
-                60,
+                state.config().reliability.rate_limit_capacity,
+                state.config().reliability.rate_limit_refill_per_sec,
+                1,
             )
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         if !user_allowed {
             return Err(StatusCode::TOO_MANY_REQUESTS);
         }
-        let (ip_allowed, _) = queue
-            .check_rate_limit(
+        let (ip_allowed, _, _) = queue
+            .check_rate_limit_token_bucket(
                 "ip",
                 &format!("{}:ws_results", addr.ip()),
-                state.config().security.rate_limit_burst,
-                60,
+                state.config().reliability.rate_limit_capacity,
+                state.config().reliability.rate_limit_refill_per_sec,
+                1,
             )
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;

@@ -1,20 +1,12 @@
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{header, HeaderMap, StatusCode};
+use axum::response::IntoResponse;
 use axum::routing::get;
-use axum::{Json, Router};
-use serde::Serialize;
+use axum::Router;
 
 use deepmail_common::errors::DeepMailError;
 
 use crate::state::AppState;
-
-#[derive(Debug, Serialize)]
-pub struct MetricsSnapshot {
-    pub jobs_processed_total: i64,
-    pub failed_jobs_total: i64,
-    pub stage_latency_avg_seconds: serde_json::Value,
-    pub sandbox_execution_avg_ms: f64,
-}
 
 pub fn routes() -> Router<AppState> {
     Router::new().route("/metrics", get(metrics_handler))
@@ -22,7 +14,7 @@ pub fn routes() -> Router<AppState> {
 
 async fn metrics_handler(
     State(state): State<AppState>,
-) -> Result<(StatusCode, Json<MetricsSnapshot>), DeepMailError> {
+) -> Result<impl IntoResponse, DeepMailError> {
     let conn = state.db_pool().get()?;
 
     let jobs_processed_total: i64 = conn
@@ -42,31 +34,56 @@ async fn metrics_handler(
          WHERE completed_at IS NOT NULL
          GROUP BY stage",
     )?;
-    let mut stage_map = serde_json::Map::new();
     let rows = stage_stmt.query_map([], |row| {
         let stage: String = row.get(0)?;
         let avg: f64 = row.get(1)?;
         Ok((stage, avg))
     })?;
-    for row in rows.flatten() {
-        stage_map.insert(row.0, serde_json::json!(row.1));
-    }
 
-    let sandbox_execution_avg_ms: f64 = conn
+    let sandbox_execution_avg_seconds: f64 = conn
         .query_row(
-            "SELECT COALESCE(AVG(execution_time_ms), 0.0) FROM sandbox_reports",
+            "SELECT COALESCE(AVG(execution_time_ms), 0.0) / 1000.0 FROM sandbox_reports",
             [],
             |row| row.get(0),
         )
         .unwrap_or(0.0);
 
-    Ok((
-        StatusCode::OK,
-        Json(MetricsSnapshot {
-            jobs_processed_total,
-            failed_jobs_total,
-            stage_latency_avg_seconds: serde_json::Value::Object(stage_map),
-            sandbox_execution_avg_ms,
-        }),
-    ))
+    let mut body = String::new();
+    body.push_str("# HELP deepmail_jobs_processed_total Total jobs processed\n");
+    body.push_str("# TYPE deepmail_jobs_processed_total counter\n");
+    body.push_str(&format!(
+        "deepmail_jobs_processed_total {}\n",
+        jobs_processed_total
+    ));
+    body.push_str("# HELP deepmail_jobs_failed_total Total jobs failed\n");
+    body.push_str("# TYPE deepmail_jobs_failed_total counter\n");
+    body.push_str(&format!(
+        "deepmail_jobs_failed_total {}\n",
+        failed_jobs_total
+    ));
+
+    body.push_str("# HELP deepmail_stage_latency_seconds Average stage latency seconds\n");
+    body.push_str("# TYPE deepmail_stage_latency_seconds gauge\n");
+    for row in rows.flatten() {
+        body.push_str(&format!(
+            "deepmail_stage_latency_seconds{{stage=\"{}\"}} {}\n",
+            row.0, row.1
+        ));
+    }
+
+    body.push_str("# HELP deepmail_sandbox_execution_seconds Average sandbox execution seconds\n");
+    body.push_str("# TYPE deepmail_sandbox_execution_seconds gauge\n");
+    body.push_str(&format!(
+        "deepmail_sandbox_execution_seconds {}\n",
+        sandbox_execution_avg_seconds
+    ));
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        "text/plain; version=0.0.4"
+            .parse()
+            .unwrap_or_else(|_| "text/plain".parse().expect("valid plain content type")),
+    );
+    Ok((StatusCode::OK, headers, body))
 }

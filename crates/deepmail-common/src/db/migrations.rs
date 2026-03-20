@@ -299,6 +299,60 @@ const MIGRATIONS: &[Migration] = &[
                 ON emails(submitted_by, status, submitted_at);
         ",
     },
+    Migration {
+        name: "016_add_production_hardening",
+        sql: "
+            -- Soft-delete lifecycle columns on emails
+            ALTER TABLE emails ADD COLUMN archived_at TEXT;
+            ALTER TABLE emails ADD COLUMN deleted_at TEXT;
+            ALTER TABLE emails ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0;
+
+            -- Soft-delete lifecycle columns on attachments
+            ALTER TABLE attachments ADD COLUMN archived_at TEXT;
+            ALTER TABLE attachments ADD COLUMN deleted_at TEXT;
+            ALTER TABLE attachments ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0;
+
+            -- Soft-delete lifecycle columns on analysis_results
+            ALTER TABLE analysis_results ADD COLUMN archived_at TEXT;
+            ALTER TABLE analysis_results ADD COLUMN deleted_at TEXT;
+            ALTER TABLE analysis_results ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0;
+
+            -- Soft-delete lifecycle columns on sandbox_reports
+            ALTER TABLE sandbox_reports ADD COLUMN archived_at TEXT;
+            ALTER TABLE sandbox_reports ADD COLUMN deleted_at TEXT;
+            ALTER TABLE sandbox_reports ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0;
+
+            -- Indexes on emails soft-delete columns
+            CREATE INDEX IF NOT EXISTS idx_emails_archived_at ON emails(archived_at);
+            CREATE INDEX IF NOT EXISTS idx_emails_deleted_at ON emails(deleted_at);
+            CREATE INDEX IF NOT EXISTS idx_emails_is_deleted ON emails(is_deleted);
+
+            -- User flagging columns
+            ALTER TABLE users ADD COLUMN is_flagged INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE users ADD COLUMN flagged_at TEXT;
+            ALTER TABLE users ADD COLUMN flagged_reason TEXT;
+
+            -- Abuse events table
+            CREATE TABLE IF NOT EXISTS abuse_events (
+                id            TEXT PRIMARY KEY,
+                user_id       TEXT NOT NULL,
+                event_type    TEXT NOT NULL,
+                severity      TEXT NOT NULL DEFAULT 'critical',
+                details       TEXT,
+                auto_flagged  INTEGER NOT NULL DEFAULT 0,
+                reviewed_by   TEXT,
+                reviewed_at   TEXT,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_abuse_events_user_id
+                ON abuse_events(user_id);
+            CREATE INDEX IF NOT EXISTS idx_abuse_events_event_type_created_at
+                ON abuse_events(event_type, created_at);
+            CREATE INDEX IF NOT EXISTS idx_abuse_events_severity_reviewed_at
+                ON abuse_events(severity, reviewed_at);
+        ",
+    },
 ];
 
 /// Run all pending migrations in order.

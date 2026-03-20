@@ -245,24 +245,26 @@ async fn enforce_rate_limits(
     endpoint: &str,
 ) -> Result<(), DeepMailError> {
     let mut queue = state.redis_queue().await;
-    let (user_allowed, _) = queue
-        .check_rate_limit(
+    let (user_allowed, _, _) = queue
+        .check_rate_limit_token_bucket(
             "user",
             &format!("{user_id}:{endpoint}"),
-            state.config().security.rate_limit_burst,
-            60,
+            state.config().reliability.rate_limit_capacity,
+            state.config().reliability.rate_limit_refill_per_sec,
+            1,
         )
         .await?;
     if !user_allowed {
         return Err(DeepMailError::RateLimited);
     }
 
-    let (ip_allowed, _) = queue
-        .check_rate_limit(
+    let (ip_allowed, _, _) = queue
+        .check_rate_limit_token_bucket(
             "ip",
             &format!("{ip}:{endpoint}"),
-            state.config().security.rate_limit_burst,
-            60,
+            state.config().reliability.rate_limit_capacity,
+            state.config().reliability.rate_limit_refill_per_sec,
+            1,
         )
         .await?;
     if !ip_allowed {

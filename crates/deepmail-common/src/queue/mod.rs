@@ -22,7 +22,12 @@ use crate::errors::DeepMailError;
 /// Well-known queue names.
 pub const QUEUE_EMAIL_ANALYSIS: &str = "deepmail:queue:email_analysis";
 pub const QUEUE_SANDBOX: &str = "deepmail:queue:sandbox";
+pub const QUEUE_DLQ_EMAIL: &str = "deepmail:queue:dlq:email";
+pub const QUEUE_DLQ_SANDBOX: &str = "deepmail:queue:dlq:sandbox";
 pub const CHANNEL_PROGRESS: &str = "deepmail:events:progress";
+pub const KEY_SANDBOX_HEARTBEAT: &str = "deepmail:sandbox:heartbeat";
+
+const TOKEN_BUCKET_SCRIPT: &str = include_str!("../redis_scripts/token_bucket.lua");
 
 /// Represents a job to be processed by workers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +73,8 @@ impl RedisQueue {
         queue.ensure_consumer_group_on(&config.stream_name).await?;
         queue.ensure_consumer_group_on(QUEUE_EMAIL_ANALYSIS).await?;
         queue.ensure_consumer_group_on(QUEUE_SANDBOX).await?;
+        queue.ensure_consumer_group_on(QUEUE_DLQ_EMAIL).await?;
+        queue.ensure_consumer_group_on(QUEUE_DLQ_SANDBOX).await?;
 
         tracing::info!(
             default_stream = %config.stream_name,
@@ -250,38 +257,124 @@ impl RedisQueue {
         Ok(())
     }
 
-    /// Check and increment a fixed-window rate-limit counter in Redis.
-    pub async fn check_rate_limit(
+    /// Redis token-bucket check via Lua script.
+    ///
+    /// Returns `(allowed, remaining_tokens, retry_after_ms)`.
+    pub async fn check_rate_limit_token_bucket(
         &mut self,
         scope: &str,
         subject: &str,
-        limit: u32,
-        window_secs: u64,
-    ) -> Result<(bool, u64), DeepMailError> {
-        let window = chrono::Utc::now().timestamp() / window_secs as i64;
-        let key = format!("deepmail:ratelimit:{scope}:{subject}:{window}");
+        capacity: u32,
+        refill_per_sec: f64,
+        requested_tokens: u32,
+    ) -> Result<(bool, f64, u64), DeepMailError> {
+        let key = format!("deepmail:ratelimit:{scope}:{subject}");
+        let now_ms = chrono::Utc::now().timestamp_millis();
 
-        let count: i64 = self
-            .conn
-            .incr(&key, 1)
+        let values: Vec<redis::Value> = redis::Script::new(TOKEN_BUCKET_SCRIPT)
+            .key(key)
+            .arg(now_ms)
+            .arg(capacity as f64)
+            .arg(refill_per_sec)
+            .arg(requested_tokens as f64)
+            .invoke_async(&mut self.conn)
             .await
-            .map_err(|e| DeepMailError::Redis(format!("Rate limit INCR failed: {e}")))?;
+            .map_err(|e| DeepMailError::Redis(format!("Token bucket script failed: {e}")))?;
 
-        if count == 1 {
-            let _: bool = self
-                .conn
-                .expire(&key, window_secs as i64)
-                .await
-                .map_err(|e| DeepMailError::Redis(format!("Rate limit EXPIRE failed: {e}")))?;
+        if values.len() != 3 {
+            return Err(DeepMailError::Redis(
+                "Token bucket script returned unexpected payload".to_string(),
+            ));
         }
 
-        let ttl: i64 = self
-            .conn
-            .ttl(&key)
-            .await
-            .map_err(|e| DeepMailError::Redis(format!("Rate limit TTL failed: {e}")))?;
+        let allowed = match &values[0] {
+            redis::Value::Int(i) => *i == 1,
+            _ => false,
+        };
+        let remaining = match &values[1] {
+            redis::Value::Data(bytes) => {
+                String::from_utf8_lossy(bytes).parse::<f64>().unwrap_or(0.0)
+            }
+            redis::Value::Int(i) => *i as f64,
+            _ => 0.0,
+        };
+        let retry_after_ms = match &values[2] {
+            redis::Value::Int(i) => (*i).max(0) as u64,
+            redis::Value::Data(bytes) => String::from_utf8_lossy(bytes).parse::<u64>().unwrap_or(0),
+            _ => 0,
+        };
 
-        Ok((count <= limit as i64, ttl.max(0) as u64))
+        Ok((allowed, remaining, retry_after_ms))
+    }
+
+    pub async fn enqueue_dlq(
+        &mut self,
+        stream: &str,
+        original_job: &Job,
+        reason: &str,
+    ) -> Result<String, DeepMailError> {
+        let payload = serde_json::json!({
+            "original_job": original_job,
+            "reason": reason,
+            "failed_at": chrono::Utc::now().to_rfc3339(),
+        });
+        let dlq_job = Job {
+            id: original_job.id.clone(),
+            job_type: format!("dlq_{}", original_job.job_type),
+            payload: serde_json::to_string(&payload)?,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        self.enqueue_to(stream, &dlq_job).await
+    }
+
+    pub async fn replay_dlq_entry(
+        &mut self,
+        dlq_stream: &str,
+        target_stream: &str,
+        entry_id: &str,
+    ) -> Result<String, DeepMailError> {
+        let reply: redis::streams::StreamRangeReply = self
+            .conn
+            .xrange_count(dlq_stream, entry_id, entry_id, 1)
+            .await
+            .map_err(|e| DeepMailError::Redis(format!("Failed reading DLQ entry: {e}")))?;
+
+        let Some(first) = reply.ids.first() else {
+            return Err(DeepMailError::NotFound(format!(
+                "DLQ entry '{entry_id}' not found"
+            )));
+        };
+
+        let payload = extract_field(&first.map, "payload")?;
+        let parsed: serde_json::Value = serde_json::from_str(&payload)?;
+        let original_job = parsed
+            .get("original_job")
+            .ok_or_else(|| DeepMailError::Internal("Invalid DLQ payload".to_string()))?;
+
+        let mut replay_job: Job = serde_json::from_value(original_job.clone())?;
+        replay_job.created_at = chrono::Utc::now().to_rfc3339();
+        replay_job.id = format!("{}-replay", replay_job.id);
+
+        self.enqueue_to(target_stream, &replay_job).await
+    }
+
+    pub async fn set_sandbox_heartbeat(&mut self) -> Result<(), DeepMailError> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let _: () = self
+            .conn
+            .set_ex(KEY_SANDBOX_HEARTBEAT, now, 30)
+            .await
+            .map_err(|e| DeepMailError::Redis(format!("Failed setting heartbeat: {e}")))?;
+        Ok(())
+    }
+
+    pub async fn sandbox_heartbeat_healthy(&mut self) -> Result<bool, DeepMailError> {
+        let exists: bool = self
+            .conn
+            .exists(KEY_SANDBOX_HEARTBEAT)
+            .await
+            .map_err(|e| DeepMailError::Redis(format!("Failed checking heartbeat: {e}")))?;
+        Ok(exists)
     }
 }
 

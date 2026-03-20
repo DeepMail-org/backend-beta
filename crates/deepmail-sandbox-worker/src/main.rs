@@ -1,10 +1,11 @@
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use deepmail_common::circuit_breaker::CircuitBreaker;
 use deepmail_common::config::DeepMailConfig;
 use deepmail_common::db;
 use deepmail_common::models::new_id;
-use deepmail_common::queue::{RedisQueue, QUEUE_SANDBOX};
+use deepmail_common::queue::{Job, RedisQueue, QUEUE_DLQ_SANDBOX, QUEUE_SANDBOX};
 use deepmail_common::reuse;
 use deepmail_sandbox::executor::docker::{
     timed_out_report, DockerSandboxConfig, DockerSandboxExecutor,
@@ -12,11 +13,18 @@ use deepmail_sandbox::executor::docker::{
 use deepmail_sandbox::executor::SandboxExecutor;
 use deepmail_sandbox::model::{SandboxJob, SandboxJobKind, SandboxStatus, UrlDetonationTask};
 use deepmail_sandbox::security::url_guard::validate_url_for_sandbox;
+use opentelemetry::trace::TracerProvider;
+use opentelemetry_sdk::propagation::TraceContextPropagator;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::registry()
+        .with(tracing_opentelemetry::layer().with_tracer({
+            opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
+            let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
+            provider.tracer("deepmail-sandbox-worker".to_string())
+        }))
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "deepmail_sandbox_worker=info,deepmail_common=info".into()),
@@ -42,6 +50,7 @@ async fn main() -> Result<()> {
     tracing::info!(consumer = %consumer_name, "Sandbox worker running");
 
     loop {
+        let _ = queue.set_sandbox_heartbeat().await;
         match queue
             .dequeue_from(QUEUE_SANDBOX, &consumer_name, 5000)
             .await
@@ -52,6 +61,41 @@ async fn main() -> Result<()> {
                         .await
                 {
                     tracing::error!(error = %e, "Sandbox job failed");
+                    let mut payload: serde_json::Value =
+                        serde_json::from_str(&job.payload).unwrap_or(serde_json::json!({}));
+                    let attempt = payload["attempt"].as_u64().unwrap_or(0) as u32;
+                    let max_attempts = payload["max_attempts"]
+                        .as_u64()
+                        .unwrap_or(config.reliability.max_retry_attempts as u64)
+                        as u32;
+
+                    if attempt + 1 < max_attempts {
+                        let backoff = (config.reliability.retry_base_backoff_ms
+                            * (1u64 << attempt))
+                            .min(config.reliability.retry_max_backoff_ms);
+                        tokio::time::sleep(Duration::from_millis(backoff)).await;
+                        payload["attempt"] = serde_json::json!(attempt + 1);
+                        payload["max_attempts"] = serde_json::json!(max_attempts);
+                        payload["last_error"] = serde_json::json!(e.to_string());
+                        let retry_job = Job {
+                            id: job.id.clone(),
+                            job_type: job.job_type.clone(),
+                            payload: serde_json::to_string(&payload)
+                                .unwrap_or_else(|_| job.payload.clone()),
+                            created_at: chrono::Utc::now().to_rfc3339(),
+                        };
+                        let _ = queue.enqueue_to(QUEUE_SANDBOX, &retry_job).await;
+                    } else {
+                        let dlq_job = Job {
+                            id: job.id.clone(),
+                            job_type: job.job_type.clone(),
+                            payload: job.payload.clone(),
+                            created_at: chrono::Utc::now().to_rfc3339(),
+                        };
+                        let _ = queue
+                            .enqueue_dlq(QUEUE_DLQ_SANDBOX, &dlq_job, &e.to_string())
+                            .await;
+                    }
                 }
                 let _ = queue.ack_on(QUEUE_SANDBOX, &entry_id).await;
             }
@@ -72,6 +116,7 @@ async fn process_sandbox_job(
     payload: &str,
 ) -> Result<()> {
     let job: SandboxJob = serde_json::from_str(payload)?;
+    tracing::info!(email_id = %job.email_id, user_id = ?job.user_id, trace_id = ?job.trace_id, attempt = job.attempt, "Sandbox job started");
     queue
         .publish_progress(
             &config.sandbox.progress_channel,
@@ -136,6 +181,11 @@ async fn process_sandbox_job(
                 timeout_ms: job.timeout_ms,
             };
 
+            let breaker = CircuitBreaker::new("sandbox_executor", config.circuit_breaker.clone());
+            if !breaker.allow().await {
+                return Err(anyhow::anyhow!("sandbox executor circuit open"));
+            }
+
             let timed = tokio::time::timeout(
                 Duration::from_millis(executor.timeout_ms()),
                 executor.execute_url(task),
@@ -144,6 +194,7 @@ async fn process_sandbox_job(
 
             match timed {
                 Ok(Ok(handle)) => {
+                    breaker.on_success().await;
                     let report = executor.get_report(&handle).await?;
                     let reuse_payload = serde_json::json!({
                         "final_url": report.final_url.clone(),
@@ -185,6 +236,7 @@ async fn process_sandbox_job(
                         .await?;
                 }
                 Ok(Err(e)) => {
+                    breaker.on_failure().await;
                     store_report(
                         db_pool,
                         &job.email_id,
@@ -208,6 +260,7 @@ async fn process_sandbox_job(
                         .await?;
                 }
                 Err(_) => {
+                    breaker.on_failure().await;
                     let report = timed_out_report(
                         &job.email_id,
                         &job.target,

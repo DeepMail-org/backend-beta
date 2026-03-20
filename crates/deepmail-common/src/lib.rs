@@ -6,12 +6,15 @@
 
 pub mod audit;
 pub mod cache;
+pub mod circuit_breaker;
 pub mod config;
 pub mod db;
 pub mod errors;
 pub mod models;
 pub mod queue;
 pub mod quota;
+pub mod retention;
 pub mod reuse;
+pub mod telemetry;
 pub mod upload;
 pub mod utils;

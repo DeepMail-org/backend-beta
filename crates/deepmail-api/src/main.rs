@@ -20,11 +20,11 @@ use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
-use tracing_subscriber::EnvFilter;
 
 use deepmail_common::config::AppConfig;
 use deepmail_common::db;
 use deepmail_common::queue::RedisQueue;
+use deepmail_common::retention;
 use deepmail_common::upload::quarantine;
 
 use crate::state::AppState;
@@ -35,7 +35,11 @@ async fn main() -> anyhow::Result<()> {
     let config = AppConfig::load()?;
 
     // Initialize structured logging
-    init_tracing(&config.logging.level, &config.logging.format);
+    deepmail_common::telemetry::init_tracing(
+        &config.logging,
+        &config.observability,
+        "deepmail-api",
+    );
 
     tracing::info!("DeepMail API Server starting...");
 
@@ -53,6 +57,20 @@ async fn main() -> anyhow::Result<()> {
 
     // Build application state
     let app_state = AppState::new(db_pool, redis_queue, config.clone(), quarantine_dir);
+
+    // Start retention cleanup background loop
+    {
+        let db_pool = app_state.db_pool().clone();
+        let retention_cfg = config.retention.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Err(e) = retention::run_retention_cleanup(&db_pool, &retention_cfg) {
+                    tracing::error!(error = %e, "Retention cleanup failed");
+                }
+                tokio::time::sleep(Duration::from_secs(retention_cfg.cleanup_interval_secs)).await;
+            }
+        });
+    }
 
     // Build the router with middleware stack
     let app = build_router(app_state, &config);
@@ -96,26 +114,6 @@ fn build_router(state: AppState, config: &AppConfig) -> Router {
         )
         // Request tracing
         .layer(TraceLayer::new_for_http())
-}
-
-/// Initialize the tracing subscriber for structured logging.
-fn init_tracing(level: &str, format: &str) {
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
-
-    match format {
-        "json" => {
-            tracing_subscriber::fmt()
-                .with_env_filter(env_filter)
-                .json()
-                .init();
-        }
-        _ => {
-            tracing_subscriber::fmt()
-                .with_env_filter(env_filter)
-                .pretty()
-                .init();
-        }
-    }
 }
 
 /// Graceful shutdown signal handler.

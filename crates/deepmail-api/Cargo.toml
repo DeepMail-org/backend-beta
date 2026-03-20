@@ -28,3 +28,7 @@ rusqlite = { workspace = true }
 redis = { workspace = true }
 futures-util = { workspace = true }
 jsonwebtoken = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+opentelemetry_sdk = { workspace = true }

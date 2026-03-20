@@ -35,6 +35,9 @@ pub enum DeepMailError {
     #[error("Resource not found: {0}")]
     NotFound(String),
 
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -50,6 +53,7 @@ impl IntoResponse for DeepMailError {
             DeepMailError::Auth(_) => (StatusCode::UNAUTHORIZED, "auth_error"),
             DeepMailError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
             DeepMailError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
+            DeepMailError::Forbidden(_) => (StatusCode::FORBIDDEN, "forbidden"),
             DeepMailError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
         };
 
@@ -61,6 +65,7 @@ impl IntoResponse for DeepMailError {
             DeepMailError::Auth(_) => "Authentication failed".to_string(),
             DeepMailError::RateLimited => "Rate limit exceeded. Try again later.".to_string(),
             DeepMailError::NotFound(msg) => msg.clone(),
+            DeepMailError::Forbidden(msg) => msg.clone(),
             // For all server-side errors, return a generic message
             _ => "An internal error occurred".to_string(),
         };

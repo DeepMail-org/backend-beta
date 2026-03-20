@@ -28,6 +28,14 @@ pub struct SandboxJob {
     pub kind: SandboxJobKind,
     pub target: String,
     pub timeout_ms: u64,
+    #[serde(default)]
+    pub user_id: Option<String>,
+    #[serde(default)]
+    pub trace_id: Option<String>,
+    #[serde(default)]
+    pub attempt: u32,
+    #[serde(default)]
+    pub max_attempts: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
