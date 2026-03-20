@@ -65,6 +65,7 @@ lazy_static = "1"
 async-trait = "0.1"
 url = "2"
 futures-util = "0.3"
+jsonwebtoken = "9"
 
 [profile.release]
 opt-level = 3

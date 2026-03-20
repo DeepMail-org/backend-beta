@@ -1,11 +1,15 @@
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, State};
+use std::net::SocketAddr;
+
+use axum::extract::{ConnectInfo, Path, State};
+use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::routing::get;
 use axum::Router;
 use futures_util::StreamExt;
 
+use crate::auth::extract_user_id;
 use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
@@ -14,9 +18,58 @@ pub fn routes() -> Router<AppState> {
 
 async fn ws_handler(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Path(email_id): Path<String>,
     ws: WebSocketUpgrade,
 ) -> Result<Response, StatusCode> {
+    let user_id =
+        extract_user_id(&headers, state.config()).map_err(|_| StatusCode::UNAUTHORIZED)?;
+    {
+        let conn = state
+            .db_pool()
+            .get()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let owns: Option<String> = conn
+            .query_row(
+                "SELECT id FROM emails WHERE id = ?1 AND submitted_by = ?2",
+                rusqlite::params![email_id, user_id],
+                |row| row.get(0),
+            )
+            .ok();
+        if owns.is_none() {
+            return Err(StatusCode::NOT_FOUND);
+        }
+    }
+
+    {
+        let mut queue = state.redis_queue().await;
+        let (user_allowed, _) = queue
+            .check_rate_limit(
+                "user",
+                &format!("{user_id}:ws_results"),
+                state.config().security.rate_limit_burst,
+                60,
+            )
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if !user_allowed {
+            return Err(StatusCode::TOO_MANY_REQUESTS);
+        }
+        let (ip_allowed, _) = queue
+            .check_rate_limit(
+                "ip",
+                &format!("{}:ws_results", addr.ip()),
+                state.config().security.rate_limit_burst,
+                60,
+            )
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if !ip_allowed {
+            return Err(StatusCode::TOO_MANY_REQUESTS);
+        }
+    }
+
     let redis_url = state.config().redis.url.clone();
     let channel = state.config().sandbox.progress_channel.clone();
     Ok(ws.on_upgrade(move |socket| stream_progress(socket, email_id, redis_url, channel)))

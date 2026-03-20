@@ -17,7 +17,10 @@
 //! - Dedup check prevents re-processing known files
 //! - Errors are logged with full detail server-side but return safe messages
 
-use axum::extract::{Multipart, State};
+use std::net::SocketAddr;
+
+use axum::extract::{ConnectInfo, Multipart, State};
+use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::routing::post;
 use axum::{Json, Router};
@@ -26,9 +29,12 @@ use deepmail_common::audit;
 use deepmail_common::errors::DeepMailError;
 use deepmail_common::models::{new_id, now_utc, UploadResponse};
 use deepmail_common::queue::{Job, QUEUE_EMAIL_ANALYSIS};
+use deepmail_common::quota;
+use deepmail_common::reuse;
 use deepmail_common::upload::{quarantine, validation};
 use deepmail_common::utils;
 
+use crate::auth::extract_user_id;
 use crate::state::AppState;
 
 /// Register upload routes.
@@ -42,8 +48,23 @@ pub fn routes() -> Router<AppState> {
 /// Returns `202 Accepted` with the email ID and job ID on success.
 async fn upload_handler(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Result<(StatusCode, Json<UploadResponse>), DeepMailError> {
+    let user_id = extract_user_id(&headers, state.config())?;
+    enforce_rate_limits(&state, &user_id, addr.ip().to_string(), "upload").await?;
+
+    let quota_decision = quota::enforce_daily_quota(
+        state.db_pool(),
+        &user_id,
+        "uploads",
+        state.config().tenant.uploads_per_day as i64,
+    )?;
+    if !quota_decision.allowed {
+        return Err(DeepMailError::RateLimited);
+    }
+
     // ── Step 1: Extract file from multipart ──────────────────────────────────
     let (filename, data) = extract_file_field(&mut multipart).await?;
 
@@ -86,19 +107,54 @@ async fn upload_handler(
                 "Deduplication hit — returning cached result"
             );
 
+            let new_email_id = new_id();
+            conn.execute(
+                "INSERT INTO emails (
+                    id, original_name, quarantine_path, sha256_hash, file_size,
+                    submitted_by, submitted_at, status, reused_from_email_id, completed_at
+                )
+                SELECT
+                    ?1, original_name, quarantine_path, sha256_hash, file_size,
+                    ?2, ?3, 'completed', id, ?3
+                FROM emails WHERE id = ?4",
+                rusqlite::params![new_email_id, user_id, now_utc(), existing_id],
+            )?;
+
+            conn.execute(
+                "INSERT INTO analysis_results (id, email_id, result_type, data, threat_score, confidence, created_at)
+                 SELECT lower(hex(randomblob(16))), ?1, result_type, data, threat_score, confidence, ?2
+                 FROM analysis_results WHERE email_id = ?3",
+                rusqlite::params![new_email_id, now_utc(), existing_id],
+            )?;
+
             // Log the dedup event
             let _ = audit::log_dedup(state.db_pool(), &sha256, &existing_id);
 
             return Ok((
                 StatusCode::OK,
                 Json(UploadResponse {
-                    email_id: existing_id,
+                    email_id: new_email_id,
                     job_id: String::new(),
                     status: "completed".to_string(),
                     message: "File already analyzed (deduplicated)".to_string(),
                     deduplicated: true,
                 }),
             ));
+        }
+
+        if let Some(hit) = reuse::lookup_reuse_entry(state.db_pool(), "file_sha256", &sha256)? {
+            if let Some(reused_email_id) = hit.result_email_id {
+                return Ok((
+                    StatusCode::OK,
+                    Json(UploadResponse {
+                        email_id: reused_email_id,
+                        job_id: String::new(),
+                        status: "completed".to_string(),
+                        message: "Reused existing result cache".to_string(),
+                        deduplicated: true,
+                    }),
+                ));
+            }
         }
     }
 
@@ -124,8 +180,8 @@ async fn upload_handler(
         let conn = state.db_pool().get()?;
 
         conn.execute(
-            "INSERT INTO emails (id, original_name, quarantine_path, sha256_hash, file_size, submitted_at, status)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO emails (id, original_name, quarantine_path, sha256_hash, file_size, submitted_at, status, submitted_by)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 email_id,
                 original_name,
@@ -134,6 +190,7 @@ async fn upload_handler(
                 file_size,
                 submitted_at,
                 "queued",
+                user_id,
             ],
         )?;
     }
@@ -152,6 +209,8 @@ async fn upload_handler(
             "quarantine_path": quarantine_path_str,
             "sha256": sha256,
             "original_name": original_name,
+            "submitted_by": user_id,
+            "trace_id": headers.get("x-request-id").and_then(|v| v.to_str().ok()).map(|s| s.to_string()).unwrap_or_else(new_id),
         }))?,
         created_at: now_utc(),
     };
@@ -177,6 +236,39 @@ async fn upload_handler(
     };
 
     Ok((StatusCode::ACCEPTED, Json(response)))
+}
+
+async fn enforce_rate_limits(
+    state: &AppState,
+    user_id: &str,
+    ip: String,
+    endpoint: &str,
+) -> Result<(), DeepMailError> {
+    let mut queue = state.redis_queue().await;
+    let (user_allowed, _) = queue
+        .check_rate_limit(
+            "user",
+            &format!("{user_id}:{endpoint}"),
+            state.config().security.rate_limit_burst,
+            60,
+        )
+        .await?;
+    if !user_allowed {
+        return Err(DeepMailError::RateLimited);
+    }
+
+    let (ip_allowed, _) = queue
+        .check_rate_limit(
+            "ip",
+            &format!("{ip}:{endpoint}"),
+            state.config().security.rate_limit_burst,
+            60,
+        )
+        .await?;
+    if !ip_allowed {
+        return Err(DeepMailError::RateLimited);
+    }
+    Ok(())
 }
 
 /// Extract the file field from multipart form data.

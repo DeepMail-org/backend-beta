@@ -21,6 +21,8 @@ pub struct AppConfig {
     pub pipeline: PipelineConfig,
     pub worker: WorkerConfig,
     pub sandbox: SandboxConfig,
+    pub features: FeatureFlags,
+    pub tenant: TenantConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -138,6 +140,30 @@ pub struct SandboxConfig {
     pub progress_channel: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct FeatureFlags {
+    #[serde(default = "default_feature_enable_sandbox")]
+    pub enable_sandbox: bool,
+    #[serde(default = "default_feature_enable_similarity")]
+    pub enable_similarity: bool,
+    #[serde(default = "default_feature_enable_intel_providers")]
+    pub enable_intel_providers: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TenantConfig {
+    #[serde(default = "default_uploads_per_day")]
+    pub uploads_per_day: u32,
+    #[serde(default = "default_sandbox_per_day")]
+    pub sandbox_executions_per_day: u32,
+    #[serde(default = "default_url_reuse_ttl_secs")]
+    pub url_reuse_ttl_secs: u64,
+    #[serde(default = "default_domain_reuse_ttl_secs")]
+    pub domain_reuse_ttl_secs: u64,
+    #[serde(default = "default_sandbox_reuse_ttl_secs")]
+    pub sandbox_reuse_ttl_secs: u64,
+}
+
 fn default_ip_ttl() -> u64 {
     3600
 }
@@ -192,6 +218,30 @@ fn default_sandbox_pids_limit() -> u32 {
 fn default_progress_channel() -> String {
     "deepmail:events:progress".to_string()
 }
+fn default_feature_enable_sandbox() -> bool {
+    true
+}
+fn default_feature_enable_similarity() -> bool {
+    false
+}
+fn default_feature_enable_intel_providers() -> bool {
+    true
+}
+fn default_uploads_per_day() -> u32 {
+    100
+}
+fn default_sandbox_per_day() -> u32 {
+    100
+}
+fn default_url_reuse_ttl_secs() -> u64 {
+    3600
+}
+fn default_domain_reuse_ttl_secs() -> u64 {
+    1800
+}
+fn default_sandbox_reuse_ttl_secs() -> u64 {
+    86400
+}
 
 /// Type alias so callers can use `DeepMailConfig` for the top-level config.
 pub type DeepMailConfig = AppConfig;
@@ -200,7 +250,12 @@ impl AppConfig {
     /// Load configuration from `config.toml` in the current directory,
     /// then overlay with environment variables prefixed `DEEPMAIL_`.
     pub fn load() -> Result<Self, DeepMailError> {
-        Self::load_from("config.toml")
+        if std::path::Path::new("config/base.toml").exists() {
+            let env = std::env::var("DEEPMAIL_ENV").unwrap_or_else(|_| "development".to_string());
+            Self::load_layered(&format!("config/{env}.toml"))
+        } else {
+            Self::load_from("config.toml")
+        }
     }
 
     /// Load configuration from a specific file path.
@@ -220,5 +275,22 @@ impl AppConfig {
         settings
             .try_deserialize::<AppConfig>()
             .map_err(|e| DeepMailError::Config(format!("Failed to deserialize config: {e}")))
+    }
+
+    pub fn load_layered(env_path: &str) -> Result<Self, DeepMailError> {
+        let settings = config::Config::builder()
+            .add_source(config::File::from(PathBuf::from("config/base.toml")).required(true))
+            .add_source(config::File::from(PathBuf::from(env_path)).required(false))
+            .add_source(
+                config::Environment::with_prefix("DEEPMAIL")
+                    .separator("__")
+                    .try_parsing(true),
+            )
+            .build()
+            .map_err(|e| DeepMailError::Config(format!("Failed to build layered config: {e}")))?;
+
+        settings.try_deserialize::<AppConfig>().map_err(|e| {
+            DeepMailError::Config(format!("Failed to deserialize layered config: {e}"))
+        })
     }
 }

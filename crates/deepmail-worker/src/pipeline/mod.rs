@@ -31,11 +31,15 @@ use std::time::Duration;
 
 use deepmail_common::audit;
 use deepmail_common::cache::ThreatCache;
-use deepmail_common::config::{PipelineConfig, RedisConfig, SandboxConfig};
+use deepmail_common::config::{
+    FeatureFlags, PipelineConfig, RedisConfig, SandboxConfig, TenantConfig,
+};
 use deepmail_common::db::DbPool;
 use deepmail_common::errors::DeepMailError;
 use deepmail_common::models::{new_id, now_utc, EmailStatus};
 use deepmail_common::queue::{Job, RedisQueue, CHANNEL_PROGRESS, QUEUE_SANDBOX};
+use deepmail_common::quota;
+use deepmail_common::reuse;
 use deepmail_sandbox::model::{SandboxJob, SandboxJobKind};
 
 use crate::pipeline::attachment_analyzer::AttachmentAnalysisResult;
@@ -66,6 +70,14 @@ pub struct PipelineContext {
     pub pipeline: PipelineConfig,
     /// Sandbox execution policy.
     pub sandbox: SandboxConfig,
+    /// Feature flags.
+    pub features: FeatureFlags,
+    /// Tenant policy.
+    pub tenant: TenantConfig,
+    /// Owning user for tenant isolation and quotas.
+    pub user_id: Option<String>,
+    /// Trace identifier propagated from API.
+    pub trace_id: Option<String>,
 }
 
 // ─── Pipeline entry point ─────────────────────────────────────────────────────
@@ -75,7 +87,14 @@ pub struct PipelineContext {
 /// Each stage updates the email status in the database. Any unrecoverable
 /// error propagates up; the caller is responsible for marking the job failed.
 pub async fn run_pipeline(ctx: &PipelineContext) -> Result<(), DeepMailError> {
-    tracing::info!(email_id = %ctx.email_id, sha256 = %ctx.sha256, original_name = %ctx.original_name, "Pipeline started");
+    tracing::info!(
+        email_id = %ctx.email_id,
+        user_id = ?ctx.user_id,
+        trace_id = ?ctx.trace_id,
+        sha256 = %ctx.sha256,
+        original_name = %ctx.original_name,
+        "Pipeline started"
+    );
 
     // ── Stage 1: Parse email ──────────────────────────────────────────────────
     update_status(&ctx.db_pool, &ctx.email_id, &EmailStatus::AnalyzingHeaders)?;
@@ -243,7 +262,13 @@ pub async fn run_pipeline(ctx: &PipelineContext) -> Result<(), DeepMailError> {
     )
     .await;
 
-    let mut url_results = Vec::new();
+    let mut url_results = load_reused_url_results(ctx, &iocs.urls)?;
+    let urls_to_analyze: Vec<String> = iocs
+        .urls
+        .iter()
+        .filter(|u| !url_results.iter().any(|r| &r.url == *u))
+        .cloned()
+        .collect();
     let mut attachment_results = Vec::new();
     let url_timeout = Duration::from_millis(ctx.pipeline.url_analysis_timeout_ms);
     let attachment_timeout = Duration::from_millis(ctx.pipeline.attachment_analysis_timeout_ms);
@@ -253,12 +278,14 @@ pub async fn run_pipeline(ctx: &PipelineContext) -> Result<(), DeepMailError> {
         let cache = ctx.cache.clone();
         match tokio::time::timeout(
             url_timeout,
-            url_analyzer::analyze_urls(&iocs.urls, Some(&cache)),
+            url_analyzer::analyze_urls(&urls_to_analyze, Some(&cache)),
         )
         .await
         {
             Ok(Ok(results)) => {
-                url_results = results;
+                let mut merged = url_results;
+                merged.extend(results);
+                url_results = merged;
                 break;
             }
             Ok(Err(e)) => {
@@ -371,7 +398,9 @@ pub async fn run_pipeline(ctx: &PipelineContext) -> Result<(), DeepMailError> {
     )
     .await;
 
-    if ctx.sandbox.enabled {
+    persist_url_reuse(ctx, &url_results)?;
+
+    if ctx.sandbox.enabled && ctx.features.enable_sandbox {
         let _ = enqueue_sandbox_jobs(ctx, &url_results, &attachment_results).await;
     }
 
@@ -434,6 +463,14 @@ pub async fn run_pipeline(ctx: &PipelineContext) -> Result<(), DeepMailError> {
 
     // Audit log — always fire-and-forget so failures do not affect the job
     let _ = audit::log_analysis_complete(&ctx.db_pool, &ctx.email_id, threat_score.total);
+    let _ = reuse::store_reuse_entry(
+        &ctx.db_pool,
+        "file_sha256",
+        &ctx.sha256,
+        Some(&ctx.email_id),
+        None,
+        ctx.tenant.url_reuse_ttl_secs,
+    );
 
     tracing::info!(email_id = %ctx.email_id, "Pipeline completed successfully");
     let _ = publish_progress_event(
@@ -538,6 +575,19 @@ async fn enqueue_sandbox_jobs(
         .iter()
         .filter(|u| u.has_ip_host || u.suspicious_tld || u.url_length > 200)
     {
+        if let Some(user_id) = &ctx.user_id {
+            let q = quota::enforce_daily_quota(
+                &ctx.db_pool,
+                user_id,
+                "sandbox_executions",
+                ctx.tenant.sandbox_executions_per_day as i64,
+            )?;
+            if !q.allowed {
+                tracing::warn!(email_id = %ctx.email_id, user_id = %user_id, "Sandbox quota exceeded; skipping enqueue");
+                continue;
+            }
+        }
+
         let job = SandboxJob {
             id: new_id(),
             email_id: ctx.email_id.clone(),
@@ -617,6 +667,65 @@ async fn publish_progress_event(
             details,
         )
         .await
+}
+
+fn load_reused_url_results(
+    ctx: &PipelineContext,
+    urls: &[String],
+) -> Result<Vec<UrlAnalysisResult>, DeepMailError> {
+    let mut reused = Vec::new();
+    for url in urls {
+        if let Some(entry) = reuse::lookup_reuse_entry(&ctx.db_pool, "url", url)? {
+            if let Some(data) = entry.result_data {
+                if let Ok(parsed) = serde_json::from_str::<UrlAnalysisResult>(&data) {
+                    reused.push(parsed);
+                    continue;
+                }
+            }
+        }
+
+        if let Some(domain) = url_analyzer::extract_domain_for_reuse(url) {
+            if let Some(entry) = reuse::lookup_reuse_entry(&ctx.db_pool, "domain", &domain)? {
+                if let Some(data) = entry.result_data {
+                    if let Ok(parsed) = serde_json::from_str::<UrlAnalysisResult>(&data) {
+                        reused.push(UrlAnalysisResult {
+                            url: url.clone(),
+                            ..parsed
+                        });
+                    }
+                }
+            }
+        }
+    }
+    Ok(reused)
+}
+
+fn persist_url_reuse(
+    ctx: &PipelineContext,
+    url_results: &[UrlAnalysisResult],
+) -> Result<(), DeepMailError> {
+    for result in url_results {
+        let json = serde_json::to_string(result).unwrap_or_default();
+        let _ = reuse::store_reuse_entry(
+            &ctx.db_pool,
+            "url",
+            &result.url,
+            Some(&ctx.email_id),
+            Some(&json),
+            ctx.tenant.url_reuse_ttl_secs,
+        );
+        if let Some(domain) = &result.domain {
+            let _ = reuse::store_reuse_entry(
+                &ctx.db_pool,
+                "domain",
+                domain,
+                Some(&ctx.email_id),
+                Some(&json),
+                ctx.tenant.domain_reuse_ttl_secs,
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Upsert IOC nodes and create email→IOC relations in the graph tables.

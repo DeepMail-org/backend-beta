@@ -249,6 +249,40 @@ impl RedisQueue {
 
         Ok(())
     }
+
+    /// Check and increment a fixed-window rate-limit counter in Redis.
+    pub async fn check_rate_limit(
+        &mut self,
+        scope: &str,
+        subject: &str,
+        limit: u32,
+        window_secs: u64,
+    ) -> Result<(bool, u64), DeepMailError> {
+        let window = chrono::Utc::now().timestamp() / window_secs as i64;
+        let key = format!("deepmail:ratelimit:{scope}:{subject}:{window}");
+
+        let count: i64 = self
+            .conn
+            .incr(&key, 1)
+            .await
+            .map_err(|e| DeepMailError::Redis(format!("Rate limit INCR failed: {e}")))?;
+
+        if count == 1 {
+            let _: bool = self
+                .conn
+                .expire(&key, window_secs as i64)
+                .await
+                .map_err(|e| DeepMailError::Redis(format!("Rate limit EXPIRE failed: {e}")))?;
+        }
+
+        let ttl: i64 = self
+            .conn
+            .ttl(&key)
+            .await
+            .map_err(|e| DeepMailError::Redis(format!("Rate limit TTL failed: {e}")))?;
+
+        Ok((count <= limit as i64, ttl.max(0) as u64))
+    }
 }
 
 /// Extract a string field from a Redis stream entry map.

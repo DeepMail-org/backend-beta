@@ -27,3 +27,4 @@ http = { workspace = true }
 rusqlite = { workspace = true }
 redis = { workspace = true }
 futures-util = { workspace = true }
+jsonwebtoken = { workspace = true }

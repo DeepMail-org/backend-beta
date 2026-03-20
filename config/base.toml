@@ -1,60 +1,35 @@
-# ============================================================
-# DeepMail Configuration
-# ============================================================
-# Environment variable overrides use the prefix DEEPMAIL_
-# e.g. DEEPMAIL_SERVER__PORT=8080 overrides [server].port
-# ============================================================
-
 [server]
 host = "127.0.0.1"
 port = 3000
-# Maximum request body size in bytes (50 MB)
 max_body_size = 52428800
 
 [database]
-# Path to SQLite database file (created automatically)
 path = "data/deepmail.db"
-# Connection pool size
 pool_size = 8
-# Busy timeout in milliseconds
 busy_timeout_ms = 5000
 
 [redis]
 url = "redis://127.0.0.1:6379"
-# Stream name for job queue
 stream_name = "deepmail:jobs"
-# Consumer group name
 consumer_group = "workers"
 
 [upload]
-# Maximum file size in bytes (25 MB)
 max_file_size = 26214400
-# Allowed file extensions (lowercase, without dot)
 allowed_extensions = ["eml", "msg"]
-# Quarantine directory (relative to workspace root)
 quarantine_path = "data/quarantine"
 
 [security]
-# Rate limit: max requests per second per IP
 rate_limit_rps = 10
-# Rate limit burst capacity
 rate_limit_burst = 20
-# JWT secret (override via DEEPMAIL_SECURITY__JWT_SECRET in production!)
 jwt_secret = "CHANGE_ME_IN_PRODUCTION"
 
 [logging]
-# Log level: trace, debug, info, warn, error
 level = "info"
-# Output format: "json" or "pretty"
 format = "json"
 
 [cache]
-# Time-to-live in seconds for cached IP reputation lookups (default: 1 hour)
 ip_ttl_secs = 3600
-# Time-to-live in seconds for cached domain reputation lookups (default: 1 hour)
 domain_ttl_secs = 3600
-# Time-to-live in seconds for cached file hash lookups (default: 24 hours)
-# Hash-based results are stable (same file = same result), so TTL is longer.
 hash_ttl_secs = 86400
 
 [pipeline]

@@ -256,6 +256,49 @@ const MIGRATIONS: &[Migration] = &[
             CREATE INDEX IF NOT EXISTS idx_sandbox_reports_submitted_at ON sandbox_reports(submitted_at);
         ",
     },
+    Migration {
+        name: "015_add_enterprise_tenancy_observability",
+        sql: "
+            ALTER TABLE emails ADD COLUMN reused_from_email_id TEXT;
+            ALTER TABLE emails ADD COLUMN trace_id TEXT;
+
+            CREATE TABLE IF NOT EXISTS user_quotas (
+                user_id                  TEXT PRIMARY KEY NOT NULL,
+                uploads_per_day          INTEGER NOT NULL,
+                sandbox_executions_per_day INTEGER NOT NULL,
+                updated_at               TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS usage_counters (
+                id          TEXT PRIMARY KEY NOT NULL,
+                user_id     TEXT NOT NULL,
+                metric      TEXT NOT NULL,
+                day_bucket  TEXT NOT NULL,
+                count       INTEGER NOT NULL DEFAULT 0,
+                updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(user_id, metric, day_bucket),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_usage_counters_user_metric_day
+                ON usage_counters(user_id, metric, day_bucket);
+
+            CREATE TABLE IF NOT EXISTS result_reuse_index (
+                id              TEXT PRIMARY KEY NOT NULL,
+                key_type        TEXT NOT NULL,
+                key_value       TEXT NOT NULL,
+                result_email_id TEXT,
+                result_data     TEXT,
+                created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at      TEXT,
+                UNIQUE(key_type, key_value)
+            );
+            CREATE INDEX IF NOT EXISTS idx_result_reuse_lookup
+                ON result_reuse_index(key_type, key_value, expires_at);
+            CREATE INDEX IF NOT EXISTS idx_emails_submitted_by_status
+                ON emails(submitted_by, status, submitted_at);
+        ",
+    },
 ];
 
 /// Run all pending migrations in order.

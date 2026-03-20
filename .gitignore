@@ -1,10 +1,12 @@
 # Rust build output
 target/
+**/*.rs.bk
 
 # Environment and secrets
 .env
 .env.*
 .env.local
+.envrc
 
 # Runtime data
 data/
@@ -13,9 +15,24 @@ data/
 *.db-shm
 *.db-wal
 
+# Phase 4/5 runtime artifacts (workers/sandbox/observability)
+tmp/
+run/
+cache/
+metrics/
+sandbox-output/
+playwright-report/
+test-results/
+screenshots/
+traces/
+
 # Logs
 *.log
 logs/
+*.pid
+*.seed
+*.out
+*.err
 
 # Editor files
 *.swp
@@ -26,3 +43,9 @@ Thumbs.db
 .vscode/
 .idea/
 *.iml
+
+# Tooling
+.direnv/
+.cache/
+.coverage
+coverage/

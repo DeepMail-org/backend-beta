@@ -5,6 +5,7 @@ use deepmail_common::config::DeepMailConfig;
 use deepmail_common::db;
 use deepmail_common::models::new_id;
 use deepmail_common::queue::{RedisQueue, QUEUE_SANDBOX};
+use deepmail_common::reuse;
 use deepmail_sandbox::executor::docker::{
     timed_out_report, DockerSandboxConfig, DockerSandboxExecutor,
 };
@@ -85,6 +86,50 @@ async fn process_sandbox_job(
     match job.kind {
         SandboxJobKind::Url => {
             validate_url_for_sandbox(&job.target)?;
+
+            if let Some(hit) = reuse::lookup_reuse_entry(db_pool, "sandbox_url", &job.target)? {
+                if let Some(data) = hit.result_data {
+                    if let Ok(reused) = serde_json::from_str::<serde_json::Value>(&data) {
+                        let final_url = reused
+                            .get("final_url")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let redirects = reused
+                            .get("redirects")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+
+                        store_report(
+                            db_pool,
+                            &job.email_id,
+                            &job.target,
+                            final_url.as_deref(),
+                            redirects,
+                            Vec::new(),
+                            vec!["sandbox_reused".to_string()],
+                            SandboxStatus::Completed,
+                            None,
+                            0,
+                        )?;
+                        queue
+                            .publish_progress(
+                                &config.sandbox.progress_channel,
+                                &job.email_id,
+                                "sandbox_execution",
+                                "completed",
+                                Some("sandbox cache reuse hit"),
+                            )
+                            .await?;
+                        return Ok(());
+                    }
+                }
+            }
+
             let task = UrlDetonationTask {
                 email_id: job.email_id.clone(),
                 url: job.target.clone(),
@@ -100,6 +145,11 @@ async fn process_sandbox_job(
             match timed {
                 Ok(Ok(handle)) => {
                     let report = executor.get_report(&handle).await?;
+                    let reuse_payload = serde_json::json!({
+                        "final_url": report.final_url.clone(),
+                        "redirects": report.redirects.clone(),
+                        "suspicious_behavior": report.suspicious_behavior.clone(),
+                    });
                     store_report(
                         db_pool,
                         &report.email_id,
@@ -116,6 +166,14 @@ async fn process_sandbox_job(
                         report.error_message,
                         report.execution_time_ms,
                     )?;
+                    let _ = reuse::store_reuse_entry(
+                        db_pool,
+                        "sandbox_url",
+                        &job.target,
+                        Some(&job.email_id),
+                        Some(&serde_json::to_string(&reuse_payload)?),
+                        config.tenant.sandbox_reuse_ttl_secs,
+                    );
                     queue
                         .publish_progress(
                             &config.sandbox.progress_channel,

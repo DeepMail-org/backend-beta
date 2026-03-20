@@ -16,7 +16,10 @@
 //! - No raw user input is interpolated into SQL
 //! - Missing records return 404, not 500
 
-use axum::extract::{Path, State};
+use std::net::SocketAddr;
+
+use axum::extract::{ConnectInfo, Path, State};
+use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -24,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use deepmail_common::errors::DeepMailError;
 
+use crate::auth::extract_user_id;
 use crate::state::AppState;
 
 // ─── Response types ───────────────────────────────────────────────────────────
@@ -104,8 +108,13 @@ pub fn routes() -> Router<AppState> {
 /// Responds with 404 if the email does not exist.
 async fn results_handler(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Path(email_id): Path<String>,
 ) -> Result<(StatusCode, Json<EmailAnalysisReport>), DeepMailError> {
+    let user_id = extract_user_id(&headers, state.config())?;
+    enforce_rate_limits(&state, &user_id, addr.ip().to_string(), "results").await?;
+
     let conn = state.db_pool().get()?;
 
     // ── 1. Fetch email record ──────────────────────────────────────────────────
@@ -113,10 +122,10 @@ async fn results_handler(
         let mut stmt = conn.prepare(
             "SELECT id, original_name, sha256_hash, file_size, submitted_at, \
                     status, current_stage, completed_at, error_message \
-             FROM emails WHERE id = ?1",
+             FROM emails WHERE id = ?1 AND submitted_by = ?2",
         )?;
 
-        stmt.query_row(rusqlite::params![email_id], |row| {
+        stmt.query_row(rusqlite::params![email_id, user_id], |row| {
             Ok(EmailSummary {
                 id: row.get(0)?,
                 original_name: row.get(1)?,
@@ -215,4 +224,36 @@ async fn results_handler(
 
     tracing::info!(email_id = %email_id, "Results fetched");
     Ok((StatusCode::OK, Json(report)))
+}
+
+async fn enforce_rate_limits(
+    state: &AppState,
+    user_id: &str,
+    ip: String,
+    endpoint: &str,
+) -> Result<(), DeepMailError> {
+    let mut queue = state.redis_queue().await;
+    let (user_allowed, _) = queue
+        .check_rate_limit(
+            "user",
+            &format!("{user_id}:{endpoint}"),
+            state.config().security.rate_limit_burst,
+            60,
+        )
+        .await?;
+    if !user_allowed {
+        return Err(DeepMailError::RateLimited);
+    }
+    let (ip_allowed, _) = queue
+        .check_rate_limit(
+            "ip",
+            &format!("{ip}:{endpoint}"),
+            state.config().security.rate_limit_burst,
+            60,
+        )
+        .await?;
+    if !ip_allowed {
+        return Err(DeepMailError::RateLimited);
+    }
+    Ok(())
 }

@@ -8,6 +8,7 @@
 //!
 //! **No heavy processing happens here.** All analysis is delegated to workers.
 
+mod auth;
 mod middleware;
 mod routes;
 mod state;

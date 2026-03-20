@@ -191,6 +191,10 @@ fn extract_domain(url: &str) -> Option<String> {
     }
 }
 
+pub fn extract_domain_for_reuse(url: &str) -> Option<String> {
+    extract_domain(url)
+}
+
 /// Returns true if the string looks like an IPv4 address.
 fn is_ip_address(host: &str) -> bool {
     host.split('.').count() == 4 && host.split('.').all(|octet| octet.parse::<u8>().is_ok())

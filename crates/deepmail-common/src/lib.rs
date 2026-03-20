@@ -11,5 +11,7 @@ pub mod db;
 pub mod errors;
 pub mod models;
 pub mod queue;
+pub mod quota;
+pub mod reuse;
 pub mod upload;
 pub mod utils;

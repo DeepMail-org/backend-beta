@@ -111,6 +111,8 @@ async fn main() -> Result<()> {
                         .to_string();
                     let sha256 = payload["sha256"].as_str().unwrap_or("").to_string();
                     let original_name = payload["original_name"].as_str().unwrap_or("").to_string();
+                    let user_id = payload["submitted_by"].as_str().map(ToString::to_string);
+                    let trace_id = payload["trace_id"].as_str().map(ToString::to_string);
 
                     let ctx = PipelineContext {
                         email_id: email_id.clone(),
@@ -122,6 +124,10 @@ async fn main() -> Result<()> {
                         redis: config.redis.clone(),
                         pipeline: config.pipeline.clone(),
                         sandbox: config.sandbox.clone(),
+                        features: config.features.clone(),
+                        tenant: config.tenant.clone(),
+                        user_id,
+                        trace_id,
                     };
 
                     match pipeline::run_pipeline(&ctx).await {

@@ -1,0 +1,7 @@
+[logging]
+level = "info"
+format = "json"
+
+[security]
+rate_limit_rps = 20
+rate_limit_burst = 40

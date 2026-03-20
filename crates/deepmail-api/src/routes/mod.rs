@@ -3,6 +3,7 @@
 //! All routes are under `/api/v1/`.
 
 pub mod health;
+pub mod metrics;
 pub mod results;
 pub mod upload;
 pub mod ws_results;
@@ -17,6 +18,7 @@ pub fn api_routes(state: AppState) -> Router {
         .merge(health::routes())
         .merge(upload::routes())
         .merge(results::routes())
+        .merge(metrics::routes())
         .merge(ws_results::routes())
         .with_state(state)
 }
