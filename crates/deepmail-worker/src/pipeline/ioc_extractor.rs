@@ -28,8 +28,9 @@ lazy_static! {
     ).expect("Invalid IPv4 regex");
 
     /// URL pattern (http/https/ftp).
+    /// Uses r#"..."# to allow literal double-quote inside the character class.
     static ref RE_URL: Regex = Regex::new(
-        r"(https?://[^\s<>\"\'\)\]\}]+|ftp://[^\s<>\"\'\)\]\}]+)"
+        r#"(https?://[^\s<>"')\]\}]+|ftp://[^\s<>"')\]\}]+)"#
     ).expect("Invalid URL regex");
 
     /// Domain name pattern.

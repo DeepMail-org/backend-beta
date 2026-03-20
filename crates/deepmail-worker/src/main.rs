@@ -1,11 +1,20 @@
 //! DeepMail Worker — async job consumer and analysis pipeline.
 //!
-//! Connects to Redis, reads jobs from the email analysis queue,
+//! Connects to Redis Streams, reads jobs from the email analysis queue,
 //! runs the full analysis pipeline, and stores results in SQLite.
+//!
+//! # Architecture
+//! - Single Tokio runtime, multi-threaded
+//! - Redis Streams consumer group for reliable job delivery
+//! - One `PipelineContext` per job, sharing the DB pool and `ThreatCache`
+//! - All analysis stages are non-blocking async
 
 mod pipeline;
 
+use std::sync::Arc;
+
 use anyhow::Result;
+use tokio::sync::Mutex;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use deepmail_common::config::DeepMailConfig;
@@ -16,7 +25,7 @@ use crate::pipeline::PipelineContext;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // ── Initialize tracing ───────────────────────────────────────────────────
+    // ── Tracing initialisation ────────────────────────────────────────────────
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -27,30 +36,36 @@ async fn main() -> Result<()> {
 
     tracing::info!("DeepMail Worker starting...");
 
-    // ── Load configuration ───────────────────────────────────────────────────
+    // ── Load configuration ────────────────────────────────────────────────────
     let config = DeepMailConfig::load()?;
     tracing::info!("Configuration loaded");
 
-    // ── Initialize database pool ─────────────────────────────────────────────
-    let db_pool = db::create_pool(&config.database)?;
-    tracing::info!("Database pool initialized");
+    // ── Initialise database pool ──────────────────────────────────────────────
+    let db_pool = db::init_pool(&config.database)?;
+    tracing::info!("Database pool initialised");
 
-    // ── Connect to Redis ─────────────────────────────────────────────────────
+    // ── Connect to Redis and set up consumer group ────────────────────────────
     let mut queue = RedisQueue::new(&config.redis).await?;
     tracing::info!("Redis connection established");
 
-    // ── Generate unique consumer name ────────────────────────────────────────
+    // ── Create a shared ThreatCache from the queue's Redis connection ─────────
+    // The queue and cache share the same underlying MultiplexedConnection which
+    // is clone-safe (Redis multiplexes multiple commands over a single socket).
+    let threat_cache = Arc::new(Mutex::new(queue.cache()));
+    tracing::info!("Threat cache initialised");
+
+    // ── Generate unique consumer name ─────────────────────────────────────────
     let hostname = hostname::get()
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
     let consumer_name = format!("worker-{}-{}", hostname, std::process::id());
     tracing::info!(consumer = %consumer_name, "Worker identity established");
 
-    // ── Main processing loop ─────────────────────────────────────────────────
+    // ── Main processing loop ──────────────────────────────────────────────────
     tracing::info!("Entering job processing loop (email_analysis queue)...");
 
     loop {
-        // Block for up to 5 seconds waiting for a job
+        // Block up to 5 seconds for a job (XREADGROUP with BLOCK 5000)
         let job_result = queue
             .dequeue_from(QUEUE_EMAIL_ANALYSIS, &consumer_name, 5000)
             .await;
@@ -58,27 +73,31 @@ async fn main() -> Result<()> {
         match job_result {
             Ok(Some((entry_id, job))) => {
                 tracing::info!(
-                    job_id = %job.id,
+                    job_id   = %job.id,
                     job_type = %job.job_type,
                     "Job received"
                 );
 
-                // Parse the job payload
+                // ── Parse job payload ─────────────────────────────────────────
                 let payload: serde_json::Value = match serde_json::from_str(&job.payload) {
                     Ok(p) => p,
                     Err(e) => {
                         tracing::error!(
                             job_id = %job.id,
-                            error = %e,
+                            error  = %e,
                             "Failed to parse job payload — acknowledging and skipping"
                         );
-                        pipeline::mark_failed(&db_pool, &job.id, &format!("Invalid payload: {e}"));
+                        let _ = pipeline::mark_failed(
+                            &db_pool,
+                            &job.id,
+                            &format!("Invalid payload: {e}"),
+                        );
                         let _ = queue.ack_on(QUEUE_EMAIL_ANALYSIS, &entry_id).await;
                         continue;
                     }
                 };
 
-                // Build pipeline context
+                // ── Extract context fields ─────────────────────────────────────
                 let email_id = payload["email_id"]
                     .as_str()
                     .unwrap_or(&job.id)
@@ -96,48 +115,49 @@ async fn main() -> Result<()> {
                     .unwrap_or("")
                     .to_string();
 
+                // ── Build pipeline context ─────────────────────────────────────
                 let ctx = PipelineContext {
-                    email_id: email_id.clone(),
+                    email_id:        email_id.clone(),
                     quarantine_path,
                     sha256,
                     original_name,
-                    db_pool: db_pool.clone(),
+                    db_pool:         db_pool.clone(),
+                    cache:           Arc::clone(&threat_cache),
                 };
 
-                // Run the full analysis pipeline
+                // ── Execute the full analysis pipeline ─────────────────────────
                 match pipeline::run_pipeline(&ctx).await {
                     Ok(()) => {
-                        tracing::info!(
-                            email_id = %email_id,
-                            "Pipeline completed successfully"
-                        );
+                        tracing::info!(email_id = %email_id, "Pipeline completed successfully");
                     }
                     Err(e) => {
                         tracing::error!(
                             email_id = %email_id,
-                            error = %e,
+                            error    = %e,
                             "Pipeline failed"
                         );
                         let _ = pipeline::mark_failed(&db_pool, &email_id, &e.to_string());
                     }
                 }
 
-                // Acknowledge the job regardless of success/failure
-                // (failed jobs are tracked in the DB, not re-queued)
+                // ── Acknowledge job regardless of success/failure ───────────────
+                // Failed jobs are tracked in the DB; we do not re-queue them.
                 if let Err(e) = queue.ack_on(QUEUE_EMAIL_ANALYSIS, &entry_id).await {
                     tracing::error!(
                         entry_id = %entry_id,
-                        error = %e,
-                        "Failed to acknowledge job"
+                        error    = %e,
+                        "Failed to acknowledge job — it may be retried by another worker"
                     );
                 }
             }
+
             Ok(None) => {
-                // No job available — continue loop (block timeout expired)
+                // Block timeout expired — no job available, continue
                 continue;
             }
+
             Err(e) => {
-                tracing::error!(error = %e, "Error dequeuing job, backing off...");
+                tracing::error!(error = %e, "Error dequeuing job, backing off 2s...");
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
         }

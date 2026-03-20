@@ -3,6 +3,7 @@
 //! All routes are under `/api/v1/`.
 
 pub mod health;
+pub mod results;
 pub mod upload;
 
 use axum::Router;
@@ -14,5 +15,7 @@ pub fn api_routes(state: AppState) -> Router {
     Router::new()
         .merge(health::routes())
         .merge(upload::routes())
+        .merge(results::routes())
         .with_state(state)
 }
+

@@ -95,3 +95,44 @@ pub fn log_dedup(
         None,
     )
 }
+
+/// Convenience: log a pipeline stage transition.
+///
+/// Called by the worker when each stage starts or completes.
+pub fn log_pipeline_stage(
+    pool: &DbPool,
+    email_id: &str,
+    stage: &str,
+    status: &str,
+) -> Result<(), DeepMailError> {
+    let details = format!(
+        "email_id={email_id}, stage={stage}, status={status}"
+    );
+    log_audit(
+        pool,
+        "pipeline_stage",
+        "job_progress",
+        Some(&details),
+        None,
+        None,
+    )
+}
+
+/// Convenience: log a pipeline error event.
+///
+/// Records the full error in the audit table for forensic review.
+pub fn log_error(
+    pool: &DbPool,
+    email_id: &str,
+    error_msg: &str,
+) -> Result<(), DeepMailError> {
+    let details = format!("email_id={email_id}, error={error_msg}");
+    log_audit(
+        pool,
+        "pipeline_error",
+        "emails",
+        Some(&details),
+        None,
+        None,
+    )
+}

@@ -4,61 +4,95 @@
 //! updating job status in the database at each transition.
 //!
 //! # Pipeline Stages
-//! 1. Parse email (.eml) → extract headers, body, attachments
-//! 2. Analyze headers → Received chain, auth results, originating IP
-//! 3. Extract IOCs → IPs, domains, URLs, hashes
-//! 4. URL analysis (parallel) — placeholder for Phase 3
-//! 5. Attachment analysis (parallel) — hash, entropy, MIME
-//! 6. Threat scoring → weighted multi-dimensional score
-//! 7. Store all results
+//! 1. **Parse EML** → extract headers, body parts, attachments
+//! 2. **Header analysis** → Received chain, sender identity, SPF/DKIM/DMARC
+//! 3. **IOC extraction** → IPs, domains, URLs, hashes, email addresses
+//! 4. **Phishing keywords** → body text scan for urgency/deception language
+//! 5. **URL analysis** (async, with Redis cache) → structural risk signals
+//! 6. **Attachment analysis** (async, with Redis cache) → hash, entropy, MIME
+//! 7. **Threat scoring** → weighted multi-dimensional score
+//! 8. **Store results** → persist everything to SQLite + audit log
+//!
+//! # Design
+//! - Fully async using Tokio — no blocking operations
+//! - Cache is shared via `Arc<Mutex<ThreatCache>>` for safe concurrent access
+//! - Stage start/complete events are recorded for progress tracking
+//! - All errors transition the job to `Failed` with a descriptive message
 
 pub mod attachment_analyzer;
 pub mod email_parser;
 pub mod header_analysis;
 pub mod ioc_extractor;
+pub mod phishing_keywords;
 pub mod scoring;
 pub mod url_analyzer;
 
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+use deepmail_common::audit;
+use deepmail_common::cache::ThreatCache;
 use deepmail_common::db::DbPool;
 use deepmail_common::errors::DeepMailError;
 use deepmail_common::models::{new_id, now_utc, EmailStatus};
 
-use crate::pipeline::email_parser::ParsedEmail;
 use crate::pipeline::header_analysis::HeaderAnalysis;
 use crate::pipeline::ioc_extractor::ExtractedIocs;
 
-/// Context passed through the pipeline for a single job.
+/// Context passed through the pipeline for a single email job.
+///
+/// Cloned per-job so that concurrent pipelines do not share mutable state
+/// (except for the `ThreatCache` which is wrapped in `Arc<Mutex<>>`).
 pub struct PipelineContext {
+    /// Database ID of the email record.
     pub email_id: String,
+    /// Path to the quarantined .eml file.
     pub quarantine_path: String,
+    /// Pre-computed SHA-256 of the file (from upload).
     pub sha256: String,
+    /// Original filename submitted by the user.
     pub original_name: String,
+    /// Shared SQLite connection pool.
     pub db_pool: DbPool,
+    /// Shared Redis cache for IP/domain/hash lookups.
+    pub cache: Arc<Mutex<ThreatCache>>,
 }
 
-/// Run the full analysis pipeline for an email.
+// ─── Pipeline entry point ─────────────────────────────────────────────────────
+
+/// Run the full analysis pipeline for a single email.
 ///
-/// Each stage updates the email status in the database. If any stage
-/// fails, the email is marked as `Failed` with the error message.
+/// Each stage updates the email status in the database. Any unrecoverable
+/// error propagates up; the caller is responsible for marking the job failed.
 pub async fn run_pipeline(ctx: &PipelineContext) -> Result<(), DeepMailError> {
     tracing::info!(email_id = %ctx.email_id, "Pipeline started");
 
-    // ── Stage 1: Parse email ─────────────────────────────────────────────────
+    // ── Stage 1: Parse email ──────────────────────────────────────────────────
     update_status(&ctx.db_pool, &ctx.email_id, &EmailStatus::AnalyzingHeaders)?;
     record_stage_start(&ctx.db_pool, &ctx.email_id, "parse_email")?;
+    let _ = audit::log_pipeline_stage(&ctx.db_pool, &ctx.email_id, "parse_email", "started");
 
-    let raw_bytes = std::fs::read(&ctx.quarantine_path).map_err(|e| {
-        DeepMailError::Internal(format!("Failed to read quarantined file: {e}"))
-    })?;
+    let raw_bytes = tokio::fs::read(&ctx.quarantine_path)
+        .await
+        .map_err(|e| DeepMailError::Internal(format!(
+            "Failed to read quarantined file '{}': {e}",
+            ctx.quarantine_path
+        )))?;
 
     let parsed = email_parser::parse_email(&raw_bytes)?;
 
-    record_stage_complete(&ctx.db_pool, &ctx.email_id, "parse_email", Some(&format!(
-        "headers={}, attachments={}, body_len={}",
-        parsed.headers.len(),
-        parsed.attachments.len(),
-        parsed.body_text.as_ref().map_or(0, |b| b.len()),
-    )))?;
+    record_stage_complete(
+        &ctx.db_pool,
+        &ctx.email_id,
+        "parse_email",
+        Some(&format!(
+            "headers={}, attachments={}, body_len={}",
+            parsed.headers.len(),
+            parsed.attachments.len(),
+            parsed.body_text.as_ref().map_or(0, |b| b.len()),
+        )),
+    )?;
+    let _ = audit::log_pipeline_stage(&ctx.db_pool, &ctx.email_id, "parse_email", "completed");
 
     tracing::info!(
         email_id = %ctx.email_id,
@@ -67,77 +101,115 @@ pub async fn run_pipeline(ctx: &PipelineContext) -> Result<(), DeepMailError> {
         "Email parsed"
     );
 
-    // ── Stage 2: Header analysis ─────────────────────────────────────────────
+    // ── Stage 2: Header analysis ──────────────────────────────────────────────
     record_stage_start(&ctx.db_pool, &ctx.email_id, "header_analysis")?;
 
     let header_result = header_analysis::analyze_headers(&parsed);
 
-    record_stage_complete(&ctx.db_pool, &ctx.email_id, "header_analysis", Some(&format!(
-        "hops={}, originating_ip={:?}, spf={:?}, dkim={:?}, dmarc={:?}",
-        header_result.received_hops.len(),
-        header_result.originating_ip,
-        header_result.spf_result,
-        header_result.dkim_result,
-        header_result.dmarc_result,
-    )))?;
+    record_stage_complete(
+        &ctx.db_pool,
+        &ctx.email_id,
+        "header_analysis",
+        Some(&format!(
+            "hops={}, originating_ip={:?}, spf={:?}, dkim={:?}, dmarc={:?}",
+            header_result.received_hops.len(),
+            header_result.originating_ip,
+            header_result.spf_result.as_ref().map(|r| &r.result),
+            header_result.dkim_result.as_ref().map(|r| &r.result),
+            header_result.dmarc_result.as_ref().map(|r| &r.result),
+        )),
+    )?;
+    tracing::info!(email_id = %ctx.email_id, "Headers analysed");
 
-    tracing::info!(email_id = %ctx.email_id, "Headers analyzed");
-
-    // ── Stage 3: IOC extraction ──────────────────────────────────────────────
+    // ── Stage 3: IOC extraction ───────────────────────────────────────────────
     update_status(&ctx.db_pool, &ctx.email_id, &EmailStatus::ExtractingIocs)?;
     record_stage_start(&ctx.db_pool, &ctx.email_id, "ioc_extraction")?;
 
     let iocs = ioc_extractor::extract_iocs(&parsed);
-
-    // Store IOC nodes and relations in database
     store_iocs(&ctx.db_pool, &ctx.email_id, &iocs)?;
 
-    record_stage_complete(&ctx.db_pool, &ctx.email_id, "ioc_extraction", Some(&format!(
-        "ips={}, domains={}, urls={}, emails={}, hashes={}",
-        iocs.ips.len(), iocs.domains.len(), iocs.urls.len(),
-        iocs.emails.len(), iocs.hashes.len(),
-    )))?;
+    record_stage_complete(
+        &ctx.db_pool,
+        &ctx.email_id,
+        "ioc_extraction",
+        Some(&format!(
+            "ips={}, domains={}, urls={}, emails={}, hashes={}",
+            iocs.ips.len(), iocs.domains.len(), iocs.urls.len(),
+            iocs.emails.len(), iocs.hashes.len(),
+        )),
+    )?;
+    tracing::info!(email_id = %ctx.email_id, total_iocs = iocs.total_count(), "IOCs extracted");
 
+    // ── Stage 4: Phishing keyword scan ────────────────────────────────────────
+    record_stage_start(&ctx.db_pool, &ctx.email_id, "phishing_keywords")?;
+
+    let phishing = phishing_keywords::scan_bodies([
+        parsed.body_text.as_deref(),
+        parsed.body_html.as_deref(),
+    ]);
+
+    record_stage_complete(
+        &ctx.db_pool,
+        &ctx.email_id,
+        "phishing_keywords",
+        Some(&format!(
+            "matches={}, score={:.1}",
+            phishing.match_count, phishing.keyword_score,
+        )),
+    )?;
     tracing::info!(
         email_id = %ctx.email_id,
-        total_iocs = iocs.total_count(),
-        "IOCs extracted"
+        keyword_matches = phishing.match_count,
+        keyword_score   = phishing.keyword_score,
+        "Phishing keywords scanned"
     );
 
-    // ── Stage 4 & 5: Parallel URL + Attachment analysis ──────────────────────
+    // ── Stage 5 & 6: Parallel URL + Attachment analysis ───────────────────────
     update_status(&ctx.db_pool, &ctx.email_id, &EmailStatus::UrlAnalysis)?;
     record_stage_start(&ctx.db_pool, &ctx.email_id, "url_analysis")?;
     record_stage_start(&ctx.db_pool, &ctx.email_id, "attachment_analysis")?;
 
-    // Run URL and attachment analysis in parallel
-    let url_future = url_analyzer::analyze_urls(&iocs.urls);
-    let attachment_future = attachment_analyzer::analyze_attachments(
-        &ctx.db_pool,
-        &ctx.email_id,
-        &parsed.attachments,
-    );
+    // URL analysis — acquire cache lock, run, release
+    let url_results = {
+        let mut cache_guard = ctx.cache.lock().await;
+        url_analyzer::analyze_urls(&iocs.urls, Some(&mut *cache_guard)).await?
+    };
 
-    let (url_results, attachment_results) = tokio::join!(url_future, attachment_future);
-    let url_results = url_results?;
-    let attachment_results = attachment_results?;
+    // Attachment analysis — acquire cache lock, run, release
+    let attachment_results = {
+        let mut cache_guard = ctx.cache.lock().await;
+        attachment_analyzer::analyze_attachments(
+            &ctx.db_pool,
+            &ctx.email_id,
+            &parsed.attachments,
+            Some(&mut *cache_guard),
+        )
+        .await?
+    };
 
     update_status(&ctx.db_pool, &ctx.email_id, &EmailStatus::AttachmentAnalysis)?;
 
-    record_stage_complete(&ctx.db_pool, &ctx.email_id, "url_analysis", Some(&format!(
-        "urls_analyzed={}", url_results.len(),
-    )))?;
-    record_stage_complete(&ctx.db_pool, &ctx.email_id, "attachment_analysis", Some(&format!(
-        "attachments_analyzed={}", attachment_results.len(),
-    )))?;
+    record_stage_complete(
+        &ctx.db_pool,
+        &ctx.email_id,
+        "url_analysis",
+        Some(&format!("urls_analysed={}", url_results.len())),
+    )?;
+    record_stage_complete(
+        &ctx.db_pool,
+        &ctx.email_id,
+        "attachment_analysis",
+        Some(&format!("attachments_analysed={}", attachment_results.len())),
+    )?;
 
     tracing::info!(
-        email_id = %ctx.email_id,
-        urls = url_results.len(),
+        email_id   = %ctx.email_id,
+        urls       = url_results.len(),
         attachments = attachment_results.len(),
         "Parallel analysis complete"
     );
 
-    // ── Stage 6: Threat scoring ──────────────────────────────────────────────
+    // ── Stage 7: Threat scoring ───────────────────────────────────────────────
     update_status(&ctx.db_pool, &ctx.email_id, &EmailStatus::Scoring)?;
     record_stage_start(&ctx.db_pool, &ctx.email_id, "threat_scoring")?;
 
@@ -146,38 +218,47 @@ pub async fn run_pipeline(ctx: &PipelineContext) -> Result<(), DeepMailError> {
         &iocs,
         &url_results,
         &attachment_results,
+        &phishing,
     );
 
-    record_stage_complete(&ctx.db_pool, &ctx.email_id, "threat_scoring", Some(&format!(
-        "total={:.1}, confidence={:.2}, identity={:.1}, infra={:.1}, content={:.1}, attachment={:.1}",
-        threat_score.total,
-        threat_score.confidence,
-        threat_score.breakdown.identity,
-        threat_score.breakdown.infrastructure,
-        threat_score.breakdown.content,
-        threat_score.breakdown.attachment,
-    )))?;
+    record_stage_complete(
+        &ctx.db_pool,
+        &ctx.email_id,
+        "threat_scoring",
+        Some(&format!(
+            "total={:.1}, confidence={:.2}, identity={:.1}, infra={:.1}, content={:.1}, attachment={:.1}",
+            threat_score.total,
+            threat_score.confidence,
+            threat_score.breakdown.identity,
+            threat_score.breakdown.infrastructure,
+            threat_score.breakdown.content,
+            threat_score.breakdown.attachment,
+        )),
+    )?;
 
     tracing::info!(
-        email_id = %ctx.email_id,
-        score = threat_score.total,
+        email_id   = %ctx.email_id,
+        score      = threat_score.total,
         confidence = threat_score.confidence,
         "Threat score calculated"
     );
 
-    // ── Stage 7: Store analysis results ──────────────────────────────────────
-    store_analysis_results(&ctx.db_pool, &ctx.email_id, &header_result, &iocs, &threat_score)?;
+    // ── Stage 8: Persist results ──────────────────────────────────────────────
+    store_analysis_results(
+        &ctx.db_pool,
+        &ctx.email_id,
+        &header_result,
+        &iocs,
+        &phishing,
+        &threat_score,
+    )?;
 
-    // ── Mark complete ────────────────────────────────────────────────────────
+    // ── Mark complete ─────────────────────────────────────────────────────────
     update_status(&ctx.db_pool, &ctx.email_id, &EmailStatus::Completed)?;
     mark_completed(&ctx.db_pool, &ctx.email_id)?;
 
-    // Audit log
-    let _ = deepmail_common::audit::log_analysis_complete(
-        &ctx.db_pool,
-        &ctx.email_id,
-        threat_score.total,
-    );
+    // Audit log — always fire-and-forget so failures do not affect the job
+    let _ = audit::log_analysis_complete(&ctx.db_pool, &ctx.email_id, threat_score.total);
 
     tracing::info!(email_id = %ctx.email_id, "Pipeline completed successfully");
     Ok(())
@@ -185,8 +266,12 @@ pub async fn run_pipeline(ctx: &PipelineContext) -> Result<(), DeepMailError> {
 
 // ─── Database helpers ─────────────────────────────────────────────────────────
 
-/// Update the email status in the database.
-fn update_status(pool: &DbPool, email_id: &str, status: &EmailStatus) -> Result<(), DeepMailError> {
+/// Update the email status field (and current_stage + stage_started_at).
+fn update_status(
+    pool: &DbPool,
+    email_id: &str,
+    status: &EmailStatus,
+) -> Result<(), DeepMailError> {
     let conn = pool.get()?;
     conn.execute(
         "UPDATE emails SET status = ?1, current_stage = ?1, stage_started_at = ?2 WHERE id = ?3",
@@ -195,7 +280,7 @@ fn update_status(pool: &DbPool, email_id: &str, status: &EmailStatus) -> Result<
     Ok(())
 }
 
-/// Mark an email as completed.
+/// Mark an email as fully completed (sets completed_at timestamp).
 fn mark_completed(pool: &DbPool, email_id: &str) -> Result<(), DeepMailError> {
     let conn = pool.get()?;
     conn.execute(
@@ -206,50 +291,68 @@ fn mark_completed(pool: &DbPool, email_id: &str) -> Result<(), DeepMailError> {
 }
 
 /// Mark an email as failed with an error message.
-pub fn mark_failed(pool: &DbPool, email_id: &str, error: &str) -> Result<(), DeepMailError> {
+///
+/// Called by the worker loop when `run_pipeline` returns an error.
+pub fn mark_failed(
+    pool: &DbPool,
+    email_id: &str,
+    error: &str,
+) -> Result<(), DeepMailError> {
     let conn = pool.get()?;
     conn.execute(
         "UPDATE emails SET status = 'failed', error_message = ?1, completed_at = ?2 WHERE id = ?3",
         rusqlite::params![error, now_utc(), email_id],
     )?;
+    // Also audit the failure
+    let _ = audit::log_error(pool, email_id, error);
     Ok(())
 }
 
-/// Record the start of a pipeline stage.
+/// Record the start of a named pipeline stage.
 fn record_stage_start(pool: &DbPool, email_id: &str, stage: &str) -> Result<(), DeepMailError> {
     let conn = pool.get()?;
-    let id = new_id();
     conn.execute(
-        "INSERT INTO job_progress (id, email_id, stage, status, started_at) VALUES (?1, ?2, ?3, 'started', ?4)",
-        rusqlite::params![id, email_id, stage, now_utc()],
+        "INSERT INTO job_progress (id, email_id, stage, status, started_at) \
+         VALUES (?1, ?2, ?3, 'started', ?4)",
+        rusqlite::params![new_id(), email_id, stage, now_utc()],
     )?;
     Ok(())
 }
 
-/// Record the completion of a pipeline stage.
-fn record_stage_complete(pool: &DbPool, email_id: &str, stage: &str, details: Option<&str>) -> Result<(), DeepMailError> {
+/// Record the successful completion of a named pipeline stage.
+fn record_stage_complete(
+    pool: &DbPool,
+    email_id: &str,
+    stage: &str,
+    details: Option<&str>,
+) -> Result<(), DeepMailError> {
     let conn = pool.get()?;
     conn.execute(
-        "UPDATE job_progress SET status = 'completed', completed_at = ?1, details = ?2 WHERE email_id = ?3 AND stage = ?4 AND status = 'started'",
+        "UPDATE job_progress \
+         SET status = 'completed', completed_at = ?1, details = ?2 \
+         WHERE email_id = ?3 AND stage = ?4 AND status = 'started'",
         rusqlite::params![now_utc(), details, email_id, stage],
     )?;
     Ok(())
 }
 
-/// Store extracted IOCs in the database.
-fn store_iocs(pool: &DbPool, email_id: &str, iocs: &ExtractedIocs) -> Result<(), DeepMailError> {
+/// Upsert IOC nodes and create email→IOC relations in the graph tables.
+fn store_iocs(
+    pool: &DbPool,
+    email_id: &str,
+    iocs: &ExtractedIocs,
+) -> Result<(), DeepMailError> {
     let conn = pool.get()?;
 
+    // Insert or update a single IOC and return its DB id.
     let insert_ioc = |ioc_type: &str, value: &str| -> Result<String, DeepMailError> {
         let now = now_utc();
-        // Upsert: insert or update last_seen
         conn.execute(
-            "INSERT INTO ioc_nodes (id, ioc_type, value, first_seen, last_seen)
-             VALUES (?1, ?2, ?3, ?4, ?4)
+            "INSERT INTO ioc_nodes (id, ioc_type, value, first_seen, last_seen) \
+             VALUES (?1, ?2, ?3, ?4, ?4) \
              ON CONFLICT(ioc_type, value) DO UPDATE SET last_seen = ?4",
             rusqlite::params![new_id(), ioc_type, value, now],
         )?;
-        // Get the ID
         let id: String = conn.query_row(
             "SELECT id FROM ioc_nodes WHERE ioc_type = ?1 AND value = ?2",
             rusqlite::params![ioc_type, value],
@@ -260,64 +363,42 @@ fn store_iocs(pool: &DbPool, email_id: &str, iocs: &ExtractedIocs) -> Result<(),
 
     let mut ioc_ids: Vec<String> = Vec::new();
 
-    for ip in &iocs.ips {
-        if let Ok(id) = insert_ioc("ip", ip) {
-            ioc_ids.push(id);
-        }
-    }
-    for domain in &iocs.domains {
-        if let Ok(id) = insert_ioc("domain", domain) {
-            ioc_ids.push(id);
-        }
-    }
-    for url in &iocs.urls {
-        if let Ok(id) = insert_ioc("url", url) {
-            ioc_ids.push(id);
-        }
-    }
-    for email in &iocs.emails {
-        if let Ok(id) = insert_ioc("email", email) {
-            ioc_ids.push(id);
-        }
-    }
-    for hash in &iocs.hashes {
-        if let Ok(id) = insert_ioc("sha256", hash) {
-            ioc_ids.push(id);
-        }
-    }
+    for ip     in &iocs.ips     { if let Ok(id) = insert_ioc("ip",     ip)     { ioc_ids.push(id); } }
+    for domain in &iocs.domains { if let Ok(id) = insert_ioc("domain", domain) { ioc_ids.push(id); } }
+    for url    in &iocs.urls    { if let Ok(id) = insert_ioc("url",    url)    { ioc_ids.push(id); } }
+    for email  in &iocs.emails  { if let Ok(id) = insert_ioc("email",  email)  { ioc_ids.push(id); } }
+    for hash   in &iocs.hashes  { if let Ok(id) = insert_ioc("sha256", hash)   { ioc_ids.push(id); } }
 
-    // Create relations: email → each IOC
+    // Create email → IOC relations
     for ioc_id in &ioc_ids {
         let _ = conn.execute(
-            "INSERT OR IGNORE INTO ioc_relations (id, source_id, target_id, relation_type, email_id)
+            "INSERT OR IGNORE INTO ioc_relations \
+             (id, source_id, target_id, relation_type, email_id) \
              VALUES (?1, ?2, ?3, 'extracted_from', ?4)",
             rusqlite::params![new_id(), ioc_id, ioc_id, email_id],
         );
     }
 
-    tracing::debug!(
-        email_id = email_id,
-        ioc_count = ioc_ids.len(),
-        "IOCs stored in database"
-    );
-
+    tracing::debug!(email_id = email_id, ioc_count = ioc_ids.len(), "IOCs stored");
     Ok(())
 }
 
-/// Store final analysis results in the database.
+/// Persist analysis results to the `analysis_results` table.
 fn store_analysis_results(
     pool: &DbPool,
     email_id: &str,
     headers: &HeaderAnalysis,
     iocs: &ExtractedIocs,
+    phishing: &phishing_keywords::PhishingKeywordResult,
     score: &deepmail_common::models::ThreatScore,
 ) -> Result<(), DeepMailError> {
     let conn = pool.get()?;
-    let now = now_utc();
+    let now  = now_utc();
 
-    // Store header analysis
+    // Header analysis JSON
     conn.execute(
-        "INSERT INTO analysis_results (id, email_id, result_type, data, threat_score, confidence, created_at)
+        "INSERT INTO analysis_results \
+         (id, email_id, result_type, data, threat_score, confidence, created_at) \
          VALUES (?1, ?2, 'header_analysis', ?3, ?4, ?5, ?6)",
         rusqlite::params![
             new_id(), email_id,
@@ -328,9 +409,10 @@ fn store_analysis_results(
         ],
     )?;
 
-    // Store IOC summary
+    // IOC summary JSON
     conn.execute(
-        "INSERT INTO analysis_results (id, email_id, result_type, data, threat_score, confidence, created_at)
+        "INSERT INTO analysis_results \
+         (id, email_id, result_type, data, threat_score, confidence, created_at) \
          VALUES (?1, ?2, 'ioc_extraction', ?3, ?4, ?5, ?6)",
         rusqlite::params![
             new_id(), email_id,
@@ -341,9 +423,24 @@ fn store_analysis_results(
         ],
     )?;
 
-    // Store overall threat score
+    // Phishing keyword scan JSON
     conn.execute(
-        "INSERT INTO analysis_results (id, email_id, result_type, data, threat_score, confidence, created_at)
+        "INSERT INTO analysis_results \
+         (id, email_id, result_type, data, threat_score, confidence, created_at) \
+         VALUES (?1, ?2, 'phishing_keywords', ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            new_id(), email_id,
+            serde_json::to_string(phishing).unwrap_or_default(),
+            phishing.keyword_score,
+            score.confidence,
+            now,
+        ],
+    )?;
+
+    // Overall threat score JSON
+    conn.execute(
+        "INSERT INTO analysis_results \
+         (id, email_id, result_type, data, threat_score, confidence, created_at) \
          VALUES (?1, ?2, 'threat_score', ?3, ?4, ?5, ?6)",
         rusqlite::params![
             new_id(), email_id,

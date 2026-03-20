@@ -17,6 +17,7 @@ pub struct AppConfig {
     pub upload: UploadConfig,
     pub security: SecurityConfig,
     pub logging: LoggingConfig,
+    pub cache: CacheConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -73,6 +74,31 @@ pub struct LoggingConfig {
     /// Output format: "json" or "pretty".
     pub format: String,
 }
+
+/// Redis cache TTL configuration.
+///
+/// Controls how long threat intelligence results are cached per IOC type.
+/// Shorter TTLs ensure freshness; longer TTLs reduce external API pressure.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CacheConfig {
+    /// TTL for IP reputation cache entries (seconds). Default: 3600 (1 hour).
+    #[serde(default = "default_ip_ttl")]
+    pub ip_ttl_secs: u64,
+    /// TTL for domain reputation cache entries (seconds). Default: 3600 (1 hour).
+    #[serde(default = "default_domain_ttl")]
+    pub domain_ttl_secs: u64,
+    /// TTL for file hash cache entries (seconds). Default: 86400 (24 hours).
+    /// Hash-based verdicts are stable (same bytes = same result), so longer TTL is safe.
+    #[serde(default = "default_hash_ttl")]
+    pub hash_ttl_secs: u64,
+}
+
+fn default_ip_ttl() -> u64 { 3600 }
+fn default_domain_ttl() -> u64 { 3600 }
+fn default_hash_ttl() -> u64 { 86400 }
+
+/// Type alias so callers can use `DeepMailConfig` for the top-level config.
+pub type DeepMailConfig = AppConfig;
 
 impl AppConfig {
     /// Load configuration from `config.toml` in the current directory,

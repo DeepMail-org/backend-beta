@@ -1,0 +1,28 @@
+# Rust build output
+target/
+
+# Environment and secrets
+.env
+.env.*
+.env.local
+
+# Runtime data
+data/
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Logs
+*.log
+logs/
+
+# Editor files
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.iml

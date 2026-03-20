@@ -47,3 +47,12 @@ jwt_secret = "CHANGE_ME_IN_PRODUCTION"
 level = "info"
 # Output format: "json" or "pretty"
 format = "json"
+
+[cache]
+# Time-to-live in seconds for cached IP reputation lookups (default: 1 hour)
+ip_ttl_secs = 3600
+# Time-to-live in seconds for cached domain reputation lookups (default: 1 hour)
+domain_ttl_secs = 3600
+# Time-to-live in seconds for cached file hash lookups (default: 24 hours)
+# Hash-based results are stable (same file = same result), so TTL is longer.
+hash_ttl_secs = 86400

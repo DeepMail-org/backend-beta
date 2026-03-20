@@ -218,6 +218,26 @@ const MIGRATIONS: &[Migration] = &[
             CREATE INDEX IF NOT EXISTS idx_job_progress_stage ON job_progress(stage);
         ",
     },
+    Migration {
+        name: "013_add_performance_indexes",
+        sql: "
+            -- Composite index for audit log queries by resource + time window
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_resource_timestamp
+                ON audit_logs(resource, timestamp);
+
+            -- Composite index for campaign membership lookups by email
+            CREATE INDEX IF NOT EXISTS idx_campaign_members_email
+                ON campaign_members(email_id, cluster_id);
+
+            -- Composite index for analysis results ordered by time
+            CREATE INDEX IF NOT EXISTS idx_analysis_results_email_type
+                ON analysis_results(email_id, result_type, created_at);
+
+            -- Covering index for deduplication check path
+            CREATE INDEX IF NOT EXISTS idx_emails_sha256_status
+                ON emails(sha256_hash, status);
+        ",
+    },
 ];
 
 /// Run all pending migrations in order.
