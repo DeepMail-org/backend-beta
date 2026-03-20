@@ -13,26 +13,16 @@ use deepmail_sandbox::executor::docker::{
 use deepmail_sandbox::executor::SandboxExecutor;
 use deepmail_sandbox::model::{SandboxJob, SandboxJobKind, SandboxStatus, UrlDetonationTask};
 use deepmail_sandbox::security::url_guard::validate_url_for_sandbox;
-use opentelemetry::trace::TracerProvider;
-use opentelemetry_sdk::propagation::TraceContextPropagator;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::registry()
-        .with(tracing_opentelemetry::layer().with_tracer({
-            opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
-            let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
-            provider.tracer("deepmail-sandbox-worker".to_string())
-        }))
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "deepmail_sandbox_worker=info,deepmail_common=info".into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
-
     let config = DeepMailConfig::load()?;
+    deepmail_common::telemetry::init_tracing(
+        &config.logging,
+        &config.observability,
+        "deepmail-sandbox-worker",
+    );
+
     let db_pool = db::init_pool(&config.database)?;
     let mut queue = RedisQueue::new(&config.redis).await?;
 

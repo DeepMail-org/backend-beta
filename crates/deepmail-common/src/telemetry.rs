@@ -49,7 +49,8 @@ fn build_otlp_provider(
     config: &ObservabilityConfig,
     _service_name: &str,
 ) -> opentelemetry_sdk::trace::SdkTracerProvider {
-    use opentelemetry_otlp::SpanExporter;
+    use opentelemetry_otlp::{SpanExporter, WithExportConfig};
+    use opentelemetry_sdk::trace::BatchConfigBuilder;
 
     let exporter = match SpanExporter::builder()
         .with_tonic()
@@ -66,11 +67,15 @@ fn build_otlp_provider(
         }
     };
 
-    let batch_processor = opentelemetry_sdk::trace::BatchSpanProcessor::builder(exporter)
+    let batch_config = BatchConfigBuilder::default()
         .with_max_export_batch_size(config.otlp_batch_size as usize)
         .with_scheduled_delay(std::time::Duration::from_secs(
             config.otlp_batch_timeout_secs,
         ))
+        .build();
+
+    let batch_processor = opentelemetry_sdk::trace::BatchSpanProcessor::builder(exporter)
+        .with_batch_config(batch_config)
         .build();
 
     opentelemetry_sdk::trace::SdkTracerProvider::builder()

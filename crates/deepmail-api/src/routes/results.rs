@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use deepmail_common::errors::DeepMailError;
 
-use crate::auth::extract_user_id;
+use crate::auth::AuthUser;
 use crate::state::AppState;
 
 // ─── Response types ───────────────────────────────────────────────────────────
@@ -109,10 +109,11 @@ pub fn routes() -> Router<AppState> {
 async fn results_handler(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
+    auth: AuthUser,
     Path(email_id): Path<String>,
 ) -> Result<(StatusCode, Json<EmailAnalysisReport>), DeepMailError> {
-    let user_id = extract_user_id(&headers, state.config())?;
+    let user_id = auth.user_id;
     enforce_rate_limits(&state, &user_id, addr.ip().to_string(), "results").await?;
 
     let conn = state.db_pool().get()?;
@@ -122,7 +123,8 @@ async fn results_handler(
         let mut stmt = conn.prepare(
             "SELECT id, original_name, sha256_hash, file_size, submitted_at, \
                     status, current_stage, completed_at, error_message \
-             FROM emails WHERE id = ?1 AND submitted_by = ?2",
+             FROM emails
+             WHERE id = ?1 AND submitted_by = ?2 AND is_deleted = 0 AND archived_at IS NULL",
         )?;
 
         stmt.query_row(rusqlite::params![email_id, user_id], |row| {

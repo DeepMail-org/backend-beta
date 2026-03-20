@@ -72,6 +72,19 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    if config.abuse.enabled {
+        let db_pool = app_state.db_pool().clone();
+        let abuse_cfg = config.abuse.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Err(e) = deepmail_common::abuse::run_pattern_scan(&db_pool, &abuse_cfg) {
+                    tracing::error!(error = %e, "Abuse pattern scan failed");
+                }
+                tokio::time::sleep(Duration::from_secs(abuse_cfg.pattern_scan_interval_secs)).await;
+            }
+        });
+    }
+
     // Build the router with middleware stack
     let app = build_router(app_state, &config);
 

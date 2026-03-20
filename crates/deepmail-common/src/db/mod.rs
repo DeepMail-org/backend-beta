@@ -7,6 +7,7 @@
 //! - Busy timeout prevents lock contention failures
 
 pub mod migrations;
+pub mod schema_validation;
 
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
@@ -73,6 +74,7 @@ pub fn init_pool(config: &DatabaseConfig) -> Result<DbPool, DeepMailError> {
     {
         let conn = pool.get()?;
         migrations::run_migrations(&conn)?;
+        schema_validation::validate_schema(&conn)?;
     }
 
     tracing::info!(

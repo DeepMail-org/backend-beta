@@ -1,5 +1,7 @@
 [server]
 host = "0.0.0.0"
+port = 3000
+max_body_size = 52428800
 
 [logging]
 level = "info"
@@ -8,3 +10,35 @@ format = "json"
 [security]
 rate_limit_rps = 30
 rate_limit_burst = 60
+jwt_secret = "CHANGE_ME_USE_ENV"
+admin_ip_allowlist = []
+
+[observability]
+otlp_endpoint = "http://tempo:4317"
+otlp_enabled = true
+otlp_batch_size = 512
+otlp_batch_timeout_secs = 5
+service_namespace = "deepmail"
+
+[retention]
+archive_after_days = 30
+soft_delete_after_days = 30
+purge_after_days = 30
+cleanup_interval_secs = 3600
+logs_ttl_days = 14
+
+[backup]
+backup_dir = "data/backups"
+passphrase_env_var = "DEEPMAIL_BACKUP_PASSPHRASE"
+argon2_memory_kib = 65536
+argon2_iterations = 3
+argon2_parallelism = 4
+
+[abuse]
+enabled = true
+upload_velocity_per_min = 20
+sandbox_velocity_per_min = 15
+failed_upload_threshold_5min = 10
+pattern_scan_interval_secs = 300
+repeated_malicious_hash_threshold = 5
+sandbox_harvest_threshold = 50

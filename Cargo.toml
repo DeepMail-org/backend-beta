@@ -32,7 +32,7 @@ thiserror = "1"
 anyhow = "1"
 
 # Database
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.31", features = ["bundled", "backup"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.24"
 
@@ -70,6 +70,11 @@ tracing-opentelemetry = "0.29"
 opentelemetry = { version = "0.28", features = ["trace"] }
 opentelemetry-otlp = { version = "0.28", features = ["grpc-tonic", "trace"] }
 opentelemetry_sdk = { version = "0.28", features = ["trace"] }
+aes-gcm = "0.10"
+argon2 = "0.5"
+tar = "0.4"
+flate2 = "1"
+rand = "0.8"
 
 [profile.release]
 opt-level = 3

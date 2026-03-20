@@ -4,7 +4,10 @@
 //! data models, upload validation, and utility functions used by both
 //! the API server and worker processes.
 
+pub mod abuse;
 pub mod audit;
+pub mod auth;
+pub mod backup;
 pub mod cache;
 pub mod circuit_breaker;
 pub mod config;

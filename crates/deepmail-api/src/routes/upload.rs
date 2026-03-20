@@ -25,6 +25,7 @@ use axum::http::StatusCode;
 use axum::routing::post;
 use axum::{Json, Router};
 
+use deepmail_common::abuse;
 use deepmail_common::audit;
 use deepmail_common::errors::DeepMailError;
 use deepmail_common::models::{new_id, now_utc, UploadResponse};
@@ -34,7 +35,7 @@ use deepmail_common::reuse;
 use deepmail_common::upload::{quarantine, validation};
 use deepmail_common::utils;
 
-use crate::auth::extract_user_id;
+use crate::auth::AuthUser;
 use crate::state::AppState;
 
 /// Register upload routes.
@@ -50,10 +51,21 @@ async fn upload_handler(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
+    auth: AuthUser,
     mut multipart: Multipart,
 ) -> Result<(StatusCode, Json<UploadResponse>), DeepMailError> {
-    let user_id = extract_user_id(&headers, state.config())?;
+    let user_id = auth.user_id;
     enforce_rate_limits(&state, &user_id, addr.ip().to_string(), "upload").await?;
+
+    {
+        let mut queue = state.redis_queue().await;
+        let flagged = abuse::is_user_flagged(state.db_pool(), queue.conn_mut(), &user_id).await?;
+        if flagged {
+            return Err(DeepMailError::Forbidden(
+                "Account flagged for abuse".to_string(),
+            ));
+        }
+    }
 
     let quota_decision = quota::enforce_daily_quota(
         state.db_pool(),
@@ -91,7 +103,8 @@ async fn upload_handler(
     {
         let conn = state.db_pool().get()?;
         let mut stmt = conn.prepare(
-            "SELECT id, status FROM emails WHERE sha256_hash = ?1 AND status = 'completed' LIMIT 1",
+            "SELECT id, status FROM emails
+             WHERE sha256_hash = ?1 AND status = 'completed' AND is_deleted = 0 LIMIT 1",
         )?;
 
         let existing: Option<(String, String)> = stmt
@@ -234,6 +247,30 @@ async fn upload_handler(
         message: "Email submitted for analysis".to_string(),
         deduplicated: false,
     };
+
+    if state.config().abuse.enabled {
+        let mut queue = state.redis_queue().await;
+        let exceeded = abuse::check_velocity(
+            queue.conn_mut(),
+            &user_id,
+            "uploads",
+            state.config().abuse.upload_velocity_per_min,
+            60_000,
+        )
+        .await?;
+        if exceeded {
+            let details = "Upload velocity threshold exceeded".to_string();
+            let _ = abuse::flag_user(state.db_pool(), &user_id, &details);
+            let _ = abuse::record_abuse_event(
+                state.db_pool(),
+                &user_id,
+                "velocity_upload",
+                "critical",
+                Some(&details),
+                true,
+            );
+        }
+    }
 
     Ok((StatusCode::ACCEPTED, Json(response)))
 }

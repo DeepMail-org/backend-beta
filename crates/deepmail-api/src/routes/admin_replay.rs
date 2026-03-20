@@ -9,6 +9,7 @@ use deepmail_common::queue::{
     QUEUE_DLQ_EMAIL, QUEUE_DLQ_SANDBOX, QUEUE_EMAIL_ANALYSIS, QUEUE_SANDBOX,
 };
 
+use crate::auth::RequireAdmin;
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
@@ -22,6 +23,7 @@ pub fn routes() -> Router<AppState> {
 
 async fn replay_handler(
     State(state): State<AppState>,
+    RequireAdmin(_auth): RequireAdmin,
     Path((queue_name, entry_id)): Path<(String, String)>,
 ) -> Result<(StatusCode, Json<ReplayResponse>), DeepMailError> {
     let (dlq, target) = match queue_name.as_str() {

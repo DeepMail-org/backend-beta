@@ -2,14 +2,14 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use std::net::SocketAddr;
 
 use axum::extract::{ConnectInfo, Path, State};
-use axum::http::HeaderMap;
-use axum::http::StatusCode;
 use axum::response::Response;
 use axum::routing::get;
 use axum::Router;
 use futures_util::StreamExt;
 
-use crate::auth::extract_user_id;
+use deepmail_common::errors::DeepMailError;
+
+use crate::auth::AuthUser;
 use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
@@ -19,26 +19,23 @@ pub fn routes() -> Router<AppState> {
 async fn ws_handler(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
+    auth: AuthUser,
     Path(email_id): Path<String>,
     ws: WebSocketUpgrade,
-) -> Result<Response, StatusCode> {
-    let user_id =
-        extract_user_id(&headers, state.config()).map_err(|_| StatusCode::UNAUTHORIZED)?;
+) -> Result<Response, DeepMailError> {
+    let user_id = auth.user_id;
     {
-        let conn = state
-            .db_pool()
-            .get()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let conn = state.db_pool().get()?;
         let owns: Option<String> = conn
             .query_row(
-                "SELECT id FROM emails WHERE id = ?1 AND submitted_by = ?2",
+                "SELECT id FROM emails
+                 WHERE id = ?1 AND submitted_by = ?2 AND is_deleted = 0 AND archived_at IS NULL",
                 rusqlite::params![email_id, user_id],
                 |row| row.get(0),
             )
             .ok();
         if owns.is_none() {
-            return Err(StatusCode::NOT_FOUND);
+            return Err(DeepMailError::NotFound("Email not found".to_string()));
         }
     }
 
@@ -52,10 +49,9 @@ async fn ws_handler(
                 state.config().reliability.rate_limit_refill_per_sec,
                 1,
             )
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            .await?;
         if !user_allowed {
-            return Err(StatusCode::TOO_MANY_REQUESTS);
+            return Err(DeepMailError::RateLimited);
         }
         let (ip_allowed, _, _) = queue
             .check_rate_limit_token_bucket(
@@ -65,10 +61,9 @@ async fn ws_handler(
                 state.config().reliability.rate_limit_refill_per_sec,
                 1,
             )
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            .await?;
         if !ip_allowed {
-            return Err(StatusCode::TOO_MANY_REQUESTS);
+            return Err(DeepMailError::RateLimited);
         }
     }
 

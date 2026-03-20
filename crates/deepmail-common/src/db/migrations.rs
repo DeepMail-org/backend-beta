@@ -355,6 +355,8 @@ const MIGRATIONS: &[Migration] = &[
     },
 ];
 
+pub const MIGRATION_COUNT: u32 = 16;
+
 /// Run all pending migrations in order.
 pub fn run_migrations(conn: &Connection) -> Result<(), DeepMailError> {
     // First, ensure the migrations tracking table exists

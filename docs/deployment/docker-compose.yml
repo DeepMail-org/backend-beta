@@ -1,0 +1,48 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  tempo:
+    image: grafana/tempo:2.6.0
+    ports:
+      - "4317:4317"
+
+  api:
+    build: ../..
+    command: ["cargo", "run", "-p", "deepmail-api"]
+    environment:
+      DEEPMAIL_ENV: production
+      DEEPMAIL_REDIS__URL: redis://redis:6379
+      DEEPMAIL_OBSERVABILITY__OTLP_ENDPOINT: http://tempo:4317
+      DEEPMAIL_OBSERVABILITY__OTLP_ENABLED: "true"
+    depends_on:
+      - redis
+      - tempo
+
+  worker:
+    build: ../..
+    command: ["cargo", "run", "-p", "deepmail-worker"]
+    environment:
+      DEEPMAIL_ENV: production
+      DEEPMAIL_REDIS__URL: redis://redis:6379
+      DEEPMAIL_OBSERVABILITY__OTLP_ENDPOINT: http://tempo:4317
+      DEEPMAIL_OBSERVABILITY__OTLP_ENABLED: "true"
+    depends_on:
+      - redis
+      - tempo
+
+  sandbox-worker:
+    build: ../..
+    command: ["cargo", "run", "-p", "deepmail-sandbox-worker"]
+    environment:
+      DEEPMAIL_ENV: production
+      DEEPMAIL_REDIS__URL: redis://redis:6379
+      DEEPMAIL_OBSERVABILITY__OTLP_ENDPOINT: http://tempo:4317
+      DEEPMAIL_OBSERVABILITY__OTLP_ENABLED: "true"
+    depends_on:
+      - redis
+      - tempo

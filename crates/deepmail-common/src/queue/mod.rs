@@ -90,6 +90,10 @@ impl RedisQueue {
         ThreatCache::new(self.conn.clone())
     }
 
+    pub fn conn_mut(&mut self) -> &mut MultiplexedConnection {
+        &mut self.conn
+    }
+
     /// Ensure the consumer group exists on a specific stream.
     async fn ensure_consumer_group_on(&mut self, stream: &str) -> Result<(), DeepMailError> {
         let result: Result<(), redis::RedisError> = redis::cmd("XGROUP")
