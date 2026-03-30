@@ -49,10 +49,10 @@ struct ReviewRequest {
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/admin/abuse/events", get(list_events))
-        .route("/admin/abuse/events/{id}", get(get_event))
-        .route("/admin/abuse/events/{id}/review", post(review_event))
-        .route("/admin/abuse/flag/{user_id}", post(flag_user))
-        .route("/admin/abuse/unflag/{user_id}", post(unflag_user))
+        .route("/admin/abuse/events/:id", get(get_event))
+        .route("/admin/abuse/events/:id/review", post(review_event))
+        .route("/admin/abuse/flag/:user_id", post(flag_user))
+        .route("/admin/abuse/unflag/:user_id", post(unflag_user))
 }
 
 async fn list_events(

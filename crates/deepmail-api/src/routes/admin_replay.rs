@@ -18,7 +18,7 @@ struct ReplayResponse {
 }
 
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/admin/replay/{queue}/{entry_id}", post(replay_handler))
+    Router::new().route("/admin/replay/:queue/:entry_id", post(replay_handler))
 }
 
 async fn replay_handler(

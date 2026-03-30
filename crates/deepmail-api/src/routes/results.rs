@@ -30,6 +30,8 @@ use deepmail_common::errors::DeepMailError;
 use crate::auth::AuthUser;
 use crate::state::AppState;
 
+const RESULTS_ROUTE: &str = "/results/:email_id";
+
 // ─── Response types ───────────────────────────────────────────────────────────
 
 /// Full analysis report for a single email submission.
@@ -97,7 +99,7 @@ pub struct IocEntry {
 
 /// Register results routes under the shared router.
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/results/{email_id}", get(results_handler))
+    Router::new().route(RESULTS_ROUTE, get(results_handler))
 }
 
 // ─── Handler ─────────────────────────────────────────────────────────────────
@@ -260,4 +262,32 @@ async fn enforce_rate_limits(
         return Err(DeepMailError::RateLimited);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use axum::Router;
+    use tower::util::ServiceExt;
+
+    use super::RESULTS_ROUTE;
+
+    #[tokio::test]
+    async fn results_route_matches_email_id_path() {
+        let app = Router::new().route(RESULTS_ROUTE, get(|| async { StatusCode::OK }));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/results/test-id")
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("run request");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
 }

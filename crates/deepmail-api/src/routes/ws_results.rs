@@ -13,7 +13,7 @@ use crate::auth::AuthUser;
 use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/ws/results/{email_id}", get(ws_handler))
+    Router::new().route("/ws/results/:email_id", get(ws_handler))
 }
 
 async fn ws_handler(

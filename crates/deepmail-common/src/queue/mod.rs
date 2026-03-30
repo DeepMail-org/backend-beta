@@ -129,7 +129,7 @@ impl RedisQueue {
 
     /// Enqueue a job to a specific named stream.
     pub async fn enqueue_to(&mut self, stream: &str, job: &Job) -> Result<String, DeepMailError> {
-        let job_json = serde_json::to_string(job)?;
+        let job_json = encode_stream_payload(job)?;
 
         let entry_id: String = self
             .conn
@@ -379,6 +379,28 @@ impl RedisQueue {
             .await
             .map_err(|e| DeepMailError::Redis(format!("Failed checking heartbeat: {e}")))?;
         Ok(exists)
+    }
+}
+
+fn encode_stream_payload(job: &Job) -> Result<String, DeepMailError> {
+    Ok(job.payload.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{encode_stream_payload, Job};
+
+    #[test]
+    fn stream_payload_uses_job_payload_only() {
+        let job = Job {
+            id: "job-1".to_string(),
+            job_type: "email_analysis".to_string(),
+            payload: r#"{"email_id":"abc","quarantine_path":"/tmp/q"}"#.to_string(),
+            created_at: "2026-03-30T00:00:00Z".to_string(),
+        };
+
+        let payload = encode_stream_payload(&job).expect("encode payload");
+        assert_eq!(payload, job.payload);
     }
 }
 

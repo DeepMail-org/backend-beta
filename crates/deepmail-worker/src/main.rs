@@ -86,7 +86,7 @@ async fn main() -> Result<()> {
                     let _permit = permit;
                     tracing::info!(job_id = %job.id, job_type = %job.job_type, "Job received");
 
-                    let payload: serde_json::Value = match serde_json::from_str(&job.payload) {
+                    let payload: serde_json::Value = match parse_payload_value(&job.payload) {
                         Ok(p) => p,
                         Err(e) => {
                             tracing::error!(job_id = %job.id, error = %e, "Invalid payload");
@@ -195,5 +195,34 @@ async fn main() -> Result<()> {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
         }
+    }
+}
+
+fn parse_payload_value(raw: &str) -> Result<serde_json::Value, serde_json::Error> {
+    let parsed: serde_json::Value = serde_json::from_str(raw)?;
+    if let Some(inner) = parsed.get("payload").and_then(|v| v.as_str()) {
+        if let Ok(nested) = serde_json::from_str::<serde_json::Value>(inner) {
+            return Ok(nested);
+        }
+    }
+    Ok(parsed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_payload_value;
+
+    #[test]
+    fn parses_raw_payload() {
+        let payload = r#"{"email_id":"abc","quarantine_path":"/tmp/q"}"#;
+        let parsed = parse_payload_value(payload).expect("parse payload");
+        assert_eq!(parsed["email_id"], "abc");
+    }
+
+    #[test]
+    fn parses_legacy_wrapped_payload() {
+        let wrapped = r#"{"id":"job-1","job_type":"email_analysis","payload":"{\"email_id\":\"abc\",\"quarantine_path\":\"/tmp/q\"}","created_at":"2026-03-30T00:00:00Z"}"#;
+        let parsed = parse_payload_value(wrapped).expect("parse wrapped payload");
+        assert_eq!(parsed["email_id"], "abc");
     }
 }

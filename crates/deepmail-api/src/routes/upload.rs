@@ -24,6 +24,7 @@ use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::routing::post;
 use axum::{Json, Router};
+use rusqlite::Connection;
 
 use deepmail_common::abuse;
 use deepmail_common::audit;
@@ -55,6 +56,11 @@ async fn upload_handler(
     mut multipart: Multipart,
 ) -> Result<(StatusCode, Json<UploadResponse>), DeepMailError> {
     let user_id = auth.user_id;
+    {
+        let conn = state.db_pool().get()?;
+        ensure_user_exists(&conn, &user_id)?;
+    }
+
     enforce_rate_limits(&state, &user_id, addr.ip().to_string(), "upload").await?;
 
     {
@@ -308,6 +314,71 @@ async fn enforce_rate_limits(
         return Err(DeepMailError::RateLimited);
     }
     Ok(())
+}
+
+fn ensure_user_exists(conn: &Connection, user_id: &str) -> Result<(), DeepMailError> {
+    let exists = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM users WHERE id = ?1)",
+            rusqlite::params![user_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|value| value == 1)?;
+
+    if exists {
+        return Ok(());
+    }
+
+    let username = if user_id.trim().is_empty() {
+        "analyst".to_string()
+    } else {
+        user_id.to_string()
+    };
+    let email = format!("{}@local.invalid", username.replace('@', "_"));
+
+    conn.execute(
+        "INSERT INTO users (id, username, email, password_hash, role, is_active)
+         VALUES (?1, ?2, ?3, ?4, ?5, 1)",
+        rusqlite::params![user_id, username, email, "external-auth", "analyst"],
+    )?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ensure_user_exists;
+    use rusqlite::Connection;
+
+    #[test]
+    fn inserts_user_if_missing() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        conn.execute_batch(
+            "CREATE TABLE users (
+                id TEXT PRIMARY KEY NOT NULL,
+                username TEXT NOT NULL UNIQUE,
+                email TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'analyst',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .expect("create users table");
+
+        ensure_user_exists(&conn, "token-subject").expect("insert user");
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM users WHERE id = ?1",
+                ["token-subject"],
+                |row| row.get(0),
+            )
+            .expect("query user count");
+
+        assert_eq!(count, 1);
+    }
 }
 
 /// Extract the file field from multipart form data.
