@@ -8,6 +8,23 @@ in this service — all analysis is offloaded to workers via the Redis job queue
 
 ## Endpoints
 
+### Authentication Routes (`/auth/*`)
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/auth/otp/issue` | Issue OTP code for user token (admin only) |
+| `POST` | `/auth/redeem` | Redeem OTP code for JWT token |
+
+### Admin Auth Routes (`/admin/auth/*`)
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/admin/auth/tokens` | List all active auth tokens |
+| `POST` | `/admin/auth/revoke/:jti` | Revoke a specific token by JTI |
+| `POST` | `/admin/auth/rotate-weekly` | Rotate all tokens (weekly) |
+
+### Analysis Routes (`/api/v1/*`)
+
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/api/v1/upload` | Submit an email file for analysis |
@@ -37,11 +54,17 @@ Applied bottom-to-top on every request:
 | Module | File(s) | Purpose |
 |---|---|---|
 | `state` | `state.rs` | `AppState` (DB, Redis, config, quarantine path) |
+| `auth` | `auth.rs` | JWT validation, token registry checks, admin extraction |
 | `routes` | `routes/mod.rs` | Route tree aggregation |
 | `routes::upload` | `routes/upload.rs` | File upload handler |
 | `routes::health` | `routes/health.rs` | Health check handler |
+| `routes::auth_tokens` | `routes/auth_tokens.rs` | OTP issuance, token redemption, admin token management |
+| `routes::dashboard` | `routes/dashboard.rs` | Dashboard statistics |
+| `routes::results` | `routes/results.rs` | Query analysis results |
+| `routes::ws_results` | `routes/ws_results.rs` | WebSocket for real-time results |
 | `middleware` | `middleware/mod.rs` | Middleware exports |
 | `middleware::rate_limit` | `middleware/rate_limit.rs` | Token-bucket rate limiter |
+| `middleware::mtls` | `middleware/mtls.rs` | mTLS header enforcement |
 
 ## Security Considerations
 
