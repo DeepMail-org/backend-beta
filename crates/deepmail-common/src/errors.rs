@@ -62,6 +62,7 @@ impl IntoResponse for DeepMailError {
         let safe_message = match &self {
             DeepMailError::Validation(msg) => msg.clone(),
             DeepMailError::Upload(msg) => msg.clone(),
+            DeepMailError::Auth(msg) if msg == "token is used" => msg.clone(),
             DeepMailError::Auth(_) => "Authentication failed".to_string(),
             DeepMailError::RateLimited => "Rate limit exceeded. Try again later.".to_string(),
             DeepMailError::NotFound(msg) => msg.clone(),

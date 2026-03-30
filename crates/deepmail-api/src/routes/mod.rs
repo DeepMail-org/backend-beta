@@ -5,6 +5,8 @@
 pub mod admin_abuse;
 pub mod admin_backup;
 pub mod admin_replay;
+pub mod auth_tokens;
+pub mod dashboard;
 pub mod health;
 pub mod metrics;
 pub mod results;
@@ -30,8 +32,10 @@ pub fn api_routes(state: AppState) -> Router {
         ));
 
     Router::new()
+        .merge(dashboard::routes())
         .merge(health::routes())
         .merge(upload::routes())
+        .merge(auth_tokens::routes())
         .merge(results::routes())
         .merge(metrics::routes())
         .merge(admin_routes)

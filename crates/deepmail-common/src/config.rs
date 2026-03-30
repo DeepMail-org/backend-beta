@@ -76,6 +76,22 @@ pub struct SecurityConfig {
     pub rate_limit_burst: u32,
     /// JWT signing secret.
     pub jwt_secret: String,
+    #[serde(default = "default_jwt_issuer")]
+    pub jwt_issuer: String,
+    #[serde(default = "default_jwt_audience")]
+    pub jwt_audience: String,
+    #[serde(default = "default_token_ttl_days")]
+    pub token_ttl_days: u32,
+    #[serde(default = "default_otp_ttl_minutes")]
+    pub otp_ttl_minutes: u32,
+    #[serde(default = "default_otp_max_attempts")]
+    pub otp_max_attempts: u32,
+    #[serde(default = "default_otp_lockout_secs")]
+    pub otp_lockout_secs: u64,
+    #[serde(default = "default_mtls_required_for_auth_admin")]
+    pub mtls_required_for_auth_admin: bool,
+    #[serde(default)]
+    pub trusted_client_cert_fingerprints: Vec<String>,
     #[serde(default)]
     pub admin_ip_allowlist: Vec<String>,
 }
@@ -424,6 +440,27 @@ fn default_abuse_repeated_hash_threshold() -> u32 {
 fn default_abuse_sandbox_harvest_threshold() -> u32 {
     50
 }
+fn default_jwt_issuer() -> String {
+    "deepmail-inhouse".to_string()
+}
+fn default_jwt_audience() -> String {
+    "deepmail-clients".to_string()
+}
+fn default_token_ttl_days() -> u32 {
+    7
+}
+fn default_otp_ttl_minutes() -> u32 {
+    10
+}
+fn default_otp_max_attempts() -> u32 {
+    5
+}
+fn default_otp_lockout_secs() -> u64 {
+    900
+}
+fn default_mtls_required_for_auth_admin() -> bool {
+    true
+}
 
 /// Type alias so callers can use `DeepMailConfig` for the top-level config.
 pub type DeepMailConfig = AppConfig;
@@ -456,7 +493,8 @@ impl AppConfig {
 
         settings
             .try_deserialize::<AppConfig>()
-            .map_err(|e| DeepMailError::Config(format!("Failed to deserialize config: {e}")))
+            .map_err(|e| DeepMailError::Config(format!("Failed to deserialize config: {e}")))?
+            .apply_secret_providers()
     }
 
     pub fn load_layered(env_path: &str) -> Result<Self, DeepMailError> {
@@ -471,8 +509,52 @@ impl AppConfig {
             .build()
             .map_err(|e| DeepMailError::Config(format!("Failed to build layered config: {e}")))?;
 
-        settings.try_deserialize::<AppConfig>().map_err(|e| {
-            DeepMailError::Config(format!("Failed to deserialize layered config: {e}"))
-        })
+        settings
+            .try_deserialize::<AppConfig>()
+            .map_err(|e| {
+                DeepMailError::Config(format!("Failed to deserialize layered config: {e}"))
+            })?
+            .apply_secret_providers()
+    }
+
+    fn apply_secret_providers(mut self) -> Result<Self, DeepMailError> {
+        if let Ok(secret_file) = std::env::var("DEEPMAIL_JWT_SECRET_FILE") {
+            let secret = std::fs::read_to_string(&secret_file).map_err(|e| {
+                DeepMailError::Config(format!(
+                    "Failed to read JWT secret file '{secret_file}': {e}"
+                ))
+            })?;
+            self.security.jwt_secret = secret.trim().to_string();
+        }
+
+        if let Ok(secret_cmd) = std::env::var("DEEPMAIL_JWT_SECRET_CMD") {
+            let output = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&secret_cmd)
+                .output()
+                .map_err(|e| {
+                    DeepMailError::Config(format!(
+                        "Failed to execute JWT secret command '{secret_cmd}': {e}"
+                    ))
+                })?;
+            if !output.status.success() {
+                return Err(DeepMailError::Config(format!(
+                    "JWT secret command failed with status: {}",
+                    output.status
+                )));
+            }
+            let secret = String::from_utf8(output.stdout).map_err(|e| {
+                DeepMailError::Config(format!("JWT secret command output was not UTF-8: {e}"))
+            })?;
+            self.security.jwt_secret = secret.trim().to_string();
+        }
+
+        if self.security.jwt_secret.trim().is_empty() {
+            return Err(DeepMailError::Config(
+                "JWT secret cannot be empty after secret provider resolution".to_string(),
+            ));
+        }
+
+        Ok(self)
     }
 }

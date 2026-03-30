@@ -1,6 +1,6 @@
 [server]
-host = "127.0.0.1"
-port = 3000
+host = "0.0.0.0"
+port = 3001
 max_body_size = 52428800
 
 [database]
@@ -22,6 +22,14 @@ quarantine_path = "data/quarantine"
 rate_limit_rps = 10
 rate_limit_burst = 20
 jwt_secret = "CHANGE_ME_IN_PRODUCTION"
+jwt_issuer = "deepmail-inhouse"
+jwt_audience = "deepmail-clients"
+token_ttl_days = 7
+otp_ttl_minutes = 10
+otp_max_attempts = 5
+otp_lockout_secs = 900
+mtls_required_for_auth_admin = true
+trusted_client_cert_fingerprints = []
 
 [logging]
 level = "info"

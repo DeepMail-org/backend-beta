@@ -353,9 +353,67 @@ const MIGRATIONS: &[Migration] = &[
                 ON abuse_events(severity, reviewed_at);
         ",
     },
+    Migration {
+        name: "017_add_auth_token_security",
+        sql: "
+            CREATE TABLE IF NOT EXISTS auth_otp_codes (
+                id              TEXT PRIMARY KEY,
+                username        TEXT NOT NULL,
+                email           TEXT NOT NULL,
+                phone           TEXT NOT NULL,
+                code_hash       TEXT NOT NULL,
+                issued_by       TEXT,
+                issued_at       TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at      TEXT NOT NULL,
+                used_at         TEXT,
+                attempts        INTEGER NOT NULL DEFAULT 0,
+                lockout_until   TEXT,
+                max_attempts    INTEGER NOT NULL DEFAULT 5,
+                requester_ip    TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_auth_otp_lookup
+                ON auth_otp_codes(username, email, phone, expires_at, used_at);
+            CREATE INDEX IF NOT EXISTS idx_auth_otp_lockout
+                ON auth_otp_codes(lockout_until);
+
+            CREATE TABLE IF NOT EXISTS auth_tokens (
+                jti                 TEXT PRIMARY KEY,
+                user_id             TEXT NOT NULL,
+                token_hash          TEXT NOT NULL,
+                role                TEXT NOT NULL,
+                issued_at           TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at          TEXT NOT NULL,
+                revoked_at          TEXT,
+                status              TEXT NOT NULL DEFAULT 'active',
+                device_fingerprint  TEXT,
+                first_seen_ip       TEXT,
+                last_seen_at        TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_auth_tokens_user_status
+                ON auth_tokens(user_id, status, expires_at);
+            CREATE INDEX IF NOT EXISTS idx_auth_tokens_device
+                ON auth_tokens(device_fingerprint);
+
+            CREATE TABLE IF NOT EXISTS auth_audit (
+                id              TEXT PRIMARY KEY,
+                event_type      TEXT NOT NULL,
+                user_id         TEXT,
+                jti             TEXT,
+                source_ip       TEXT,
+                detail          TEXT,
+                immutable_hash  TEXT NOT NULL,
+                created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_auth_audit_created_at
+                ON auth_audit(created_at);
+            CREATE INDEX IF NOT EXISTS idx_auth_audit_event_user
+                ON auth_audit(event_type, user_id, created_at);
+        ",
+    },
 ];
 
-pub const MIGRATION_COUNT: u32 = 16;
+pub const MIGRATION_COUNT: u32 = (MIGRATIONS.len() - 1) as u32;
 
 /// Run all pending migrations in order.
 pub fn run_migrations(conn: &Connection) -> Result<(), DeepMailError> {
