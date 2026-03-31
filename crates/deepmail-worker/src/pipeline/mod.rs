@@ -21,6 +21,7 @@
 
 pub mod attachment_analyzer;
 pub mod email_parser;
+pub mod geoip;
 pub mod header_analysis;
 pub mod ioc_extractor;
 pub mod phishing_keywords;
@@ -185,7 +186,7 @@ pub async fn run_pipeline(ctx: &PipelineContext) -> Result<(), DeepMailError> {
     record_stage_start(&ctx.db_pool, &ctx.email_id, "ioc_extraction")?;
 
     let iocs = ioc_extractor::extract_iocs(&parsed);
-    store_iocs(&ctx.db_pool, &ctx.email_id, &iocs)?;
+    store_iocs(&ctx.db_pool, &ctx.email_id, &iocs).await?;
 
     record_stage_complete(
         &ctx.db_pool,
@@ -758,17 +759,31 @@ async fn simulate_external_intel_provider() -> Result<(), DeepMailError> {
 }
 
 /// Upsert IOC nodes and create email→IOC relations in the graph tables.
-fn store_iocs(pool: &DbPool, email_id: &str, iocs: &ExtractedIocs) -> Result<(), DeepMailError> {
+async fn store_iocs(pool: &DbPool, email_id: &str, iocs: &ExtractedIocs) -> Result<(), DeepMailError> {
+    // 1. Perform GeoIP lookups FIRST (before getting DB connection)
+    // This avoids holding a non-Send rusqlite::Connection across await points.
+    let mut ip_metadata = std::collections::HashMap::new();
+    for ip in &iocs.ips {
+        if let Ok(geo) = geoip::lookup_geoip(ip).await {
+            if let Ok(meta) = serde_json::to_string(&geo) {
+                ip_metadata.insert(ip.clone(), meta);
+                tracing::info!(ip = ip, "GeoIP lookup successful");
+            }
+        }
+    }
+
+    // 2. Get DB connection and store (NO AWAITS AFTER THIS)
     let conn = pool.get()?;
 
     // Insert or update a single IOC and return its DB id.
-    let insert_ioc = |ioc_type: &str, value: &str| -> Result<String, DeepMailError> {
+    // metadata is an optional JSON string.
+    let insert_ioc = |ioc_type: &str, value: &str, metadata: Option<String>| -> Result<String, DeepMailError> {
         let now = now_utc();
         conn.execute(
-            "INSERT INTO ioc_nodes (id, ioc_type, value, first_seen, last_seen) \
-             VALUES (?1, ?2, ?3, ?4, ?4) \
-             ON CONFLICT(ioc_type, value) DO UPDATE SET last_seen = ?4",
-            rusqlite::params![new_id(), ioc_type, value, now],
+            "INSERT INTO ioc_nodes (id, ioc_type, value, first_seen, last_seen, metadata) \
+             VALUES (?1, ?2, ?3, ?4, ?4, ?5) \
+             ON CONFLICT(ioc_type, value) DO UPDATE SET last_seen = ?4, metadata = COALESCE(?5, metadata)",
+            rusqlite::params![new_id(), ioc_type, value, now, metadata],
         )?;
         let id: String = conn.query_row(
             "SELECT id FROM ioc_nodes WHERE ioc_type = ?1 AND value = ?2",
@@ -781,27 +796,28 @@ fn store_iocs(pool: &DbPool, email_id: &str, iocs: &ExtractedIocs) -> Result<(),
     let mut ioc_ids: Vec<String> = Vec::new();
 
     for ip in &iocs.ips {
-        if let Ok(id) = insert_ioc("ip", ip) {
+        let metadata = ip_metadata.get(ip).cloned();
+        if let Ok(id) = insert_ioc("ip", ip, metadata) {
             ioc_ids.push(id);
         }
     }
     for domain in &iocs.domains {
-        if let Ok(id) = insert_ioc("domain", domain) {
+        if let Ok(id) = insert_ioc("domain", domain, None) {
             ioc_ids.push(id);
         }
     }
     for url in &iocs.urls {
-        if let Ok(id) = insert_ioc("url", url) {
+        if let Ok(id) = insert_ioc("url", url, None) {
             ioc_ids.push(id);
         }
     }
     for email in &iocs.emails {
-        if let Ok(id) = insert_ioc("email", email) {
+        if let Ok(id) = insert_ioc("email", email, None) {
             ioc_ids.push(id);
         }
     }
     for hash in &iocs.hashes {
-        if let Ok(id) = insert_ioc("sha256", hash) {
+        if let Ok(id) = insert_ioc("sha256", hash, None) {
             ioc_ids.push(id);
         }
     }

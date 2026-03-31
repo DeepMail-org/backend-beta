@@ -19,6 +19,17 @@ pub struct DashboardData {
     pub stats: DashboardStats,
     pub trend: Vec<TrendDataPoint>,
     pub recent_analyses: Vec<RecentAnalysis>,
+    pub geo_points: Vec<GeoPoint>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GeoPoint {
+    pub id: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub country: String,
+    pub risk: String,
+    pub value: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -175,10 +186,67 @@ async fn dashboard_handler(
         }
     }
 
+    // ── 4. Geolocation Points (Recent 50 IPs) ───────────────────────────────────
+    let mut geo_points = Vec::new();
+    let geo_query = r#"
+        SELECT
+            i.id,
+            i.value,
+            i.metadata,
+            MAX(ar.threat_score) as max_score
+        FROM ioc_nodes i
+        LEFT JOIN ioc_relations ir ON i.id = ir.source_id
+        LEFT JOIN analysis_results ar ON ir.email_id = ar.email_id AND ar.result_type = 'final_score'
+        WHERE i.ioc_type = 'ip' AND i.metadata IS NOT NULL
+        GROUP BY i.id
+        ORDER BY i.last_seen DESC
+        LIMIT 50
+    "#;
+
+    let mut stmt_geo = conn.prepare(geo_query)?;
+    let geo_rows = stmt_geo.query_map(rusqlite::params![], |row| {
+        let metadata_str: String = row.get(2)?;
+        let score: Option<f64> = row.get(3)?;
+        let score_val = score.unwrap_or(0.0);
+
+        let risk = if score_val >= 80.0 {
+            "Critical".to_string()
+        } else if score_val >= 40.0 {
+            "Suspicious".to_string()
+        } else {
+            "Safe".to_string()
+        };
+
+        // Try to parse metadata JSON
+        if let Ok(geo_data) = serde_json::from_str::<serde_json::Value>(&metadata_str) {
+            let lat = geo_data["lat"].as_f64().unwrap_or(0.0);
+            let lon = geo_data["lon"].as_f64().unwrap_or(0.0);
+            let country = geo_data["country"].as_str().unwrap_or("Unknown").to_string();
+
+            Ok(Some(GeoPoint {
+                id: row.get(0)?,
+                lat,
+                lon,
+                country,
+                risk,
+                value: row.get(1)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    })?;
+
+    for gr in geo_rows {
+        if let Ok(Some(point)) = gr {
+            geo_points.push(point);
+        }
+    }
+
     Ok((StatusCode::OK, Json(DashboardData {
         stats,
         trend,
         recent_analyses,
+        geo_points,
     })))
 }
 

@@ -49,6 +49,7 @@ chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
 hex = "0.4"
 infer = "0.15"
+reqwest = { version = "0.12", features = ["json"] }
 
 # Configuration
 config = { version = "0.14", features = ["toml"] }
