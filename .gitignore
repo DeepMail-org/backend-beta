@@ -7,6 +7,12 @@ target/
 .env.*
 .env.local
 .envrc
+!.env.example
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
 
 # Runtime data
 data/
@@ -25,6 +31,8 @@ playwright-report/
 test-results/
 screenshots/
 traces/
+blob-report/
+htmlcov/
 
 # Logs
 *.log
@@ -49,3 +57,7 @@ Thumbs.db
 .cache/
 .coverage
 coverage/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.idea_modules/
