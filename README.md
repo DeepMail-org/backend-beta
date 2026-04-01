@@ -41,6 +41,17 @@ multi-dimensional scoring engine.
 | `deepmail-common` | Library | Shared types, DB, Redis, validation      |
 | `deepmail-worker` | Binary  | Async job consumer and analysis pipeline |
 
+## Key Folders And Responsibilities
+
+| Folder | What it does | How it works |
+|---|---|---|
+| `crates/deepmail-api/src/routes/` | Public and admin HTTP endpoints | Axum handlers validate auth, apply per-user/IP rate limits, and query SQLite using prepared statements |
+| `crates/deepmail-worker/src/pipeline/` | Multi-stage mail analysis engine | `run_pipeline` orchestrates parser/header/IOC/url/attachment/scoring stages and persists results |
+| `crates/deepmail-worker/src/pipeline/geo_intel.rs` | Backend geolocation and abuse enrichment | MaxMind GeoLite2 lookup + Redis cache + SQLite persistence + optional AbuseIPDB enrichment |
+| `crates/deepmail-common/src/db/` | Schema and migrations | Idempotent migrations tracked in `_migrations`; latest migration adds `ip_geo_intel` TTL cache table |
+| `authentication-gen/` | Operational token scripts | CLI scripts bootstrap and rotate auth tokens via API endpoints |
+| `docs/` | Architecture and policy docs | Service-level READMEs and security policy documents used for ops and audits |
+
 ## Quick Start
 
 ```bash
@@ -72,6 +83,13 @@ cargo run --bin deepmail-worker
 Edit `config.toml` or use environment variables with `DEEPMAIL_` prefix.
 See `config.toml` for all available settings.
 
+### Threat Intel Keys (local only)
+
+- `DEEPMAIL_ABUSEIPDB_API_KEY` - abuse confidence, TOR/proxy signals
+- `DEEPMAIL_VIRUSTOTAL_API_KEY` - optional URL/domain reputation enrichment
+
+Store real keys only in local ignored env files (`.env.local`) or secret providers.
+
 ## Data Flow
 
 1. Client uploads `.eml`/`.msg` via `POST /api/v1/upload`
@@ -80,3 +98,11 @@ See `config.toml` for all available settings.
 4. Job enqueued to Redis stream `deepmail:jobs`
 5. Worker picks job → runs analysis pipeline
 6. Results stored → WebSocket notification sent (future)
+
+## New Geo-Intel Data Contract
+
+- `ioc_nodes.metadata` for IP IOCs stores enriched geo payload (`lat/lon/country/city/asn/org/abuse flags`)
+- `ip_geo_intel` persists resolver output with TTL (`expires_at`) and `confidence_score`
+- `GET /api/v1/results/:email_id` now returns:
+  - `geo_points` for map rendering
+  - `hop_timeline` parsed from the `Received` chain

@@ -407,8 +407,39 @@ const MIGRATIONS: &[Migration] = &[
             );
             CREATE INDEX IF NOT EXISTS idx_auth_audit_created_at
                 ON auth_audit(created_at);
-            CREATE INDEX IF NOT EXISTS idx_auth_audit_event_user
-                ON auth_audit(event_type, user_id, created_at);
+             CREATE INDEX IF NOT EXISTS idx_auth_audit_event_user
+                 ON auth_audit(event_type, user_id, created_at);
+        ",
+    },
+    Migration {
+        name: "018_add_ip_geo_intel_cache",
+        sql: "
+            CREATE TABLE IF NOT EXISTS ip_geo_intel (
+                ip                  TEXT PRIMARY KEY,
+                lat                 REAL NOT NULL,
+                lon                 REAL NOT NULL,
+                country             TEXT NOT NULL,
+                city                TEXT,
+                region              TEXT,
+                asn                 INTEGER,
+                org                 TEXT,
+                abuse_confidence    INTEGER,
+                is_tor              INTEGER NOT NULL DEFAULT 0,
+                is_proxy            INTEGER NOT NULL DEFAULT 0,
+                is_hosting          INTEGER NOT NULL DEFAULT 0,
+                confidence_score    REAL NOT NULL DEFAULT 0.0,
+                source              TEXT NOT NULL,
+                provider_version    TEXT,
+                first_seen_at       TEXT NOT NULL DEFAULT (datetime('now')),
+                last_resolved_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at          TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_ip_geo_intel_expires_at
+                ON ip_geo_intel(expires_at);
+            CREATE INDEX IF NOT EXISTS idx_ip_geo_intel_country
+                ON ip_geo_intel(country);
+            CREATE INDEX IF NOT EXISTS idx_ip_geo_intel_confidence
+                ON ip_geo_intel(confidence_score DESC);
         ",
     },
 ];

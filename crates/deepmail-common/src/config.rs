@@ -18,6 +18,8 @@ pub struct AppConfig {
     pub security: SecurityConfig,
     pub logging: LoggingConfig,
     pub cache: CacheConfig,
+    #[serde(default)]
+    pub intel: IntelConfig,
     pub pipeline: PipelineConfig,
     pub worker: WorkerConfig,
     pub sandbox: SandboxConfig,
@@ -29,6 +31,35 @@ pub struct AppConfig {
     pub circuit_breaker: CircuitBreakerConfig,
     pub backup: BackupConfig,
     pub abuse: AbuseConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct IntelConfig {
+    #[serde(default = "default_geoip_mmdb_city_path")]
+    pub geoip_mmdb_city_path: String,
+    #[serde(default = "default_geoip_mmdb_asn_path")]
+    pub geoip_mmdb_asn_path: String,
+    #[serde(default = "default_geoip_ttl_secs")]
+    pub geoip_ttl_secs: u64,
+    #[serde(default = "default_abuse_ttl_secs")]
+    pub abuse_ttl_secs: u64,
+    #[serde(default = "default_intel_enable_abuse_provider")]
+    pub enable_abuse_provider: bool,
+    #[serde(default = "default_abuse_provider_api_key_env")]
+    pub abuse_provider_api_key_env: String,
+}
+
+impl Default for IntelConfig {
+    fn default() -> Self {
+        Self {
+            geoip_mmdb_city_path: default_geoip_mmdb_city_path(),
+            geoip_mmdb_asn_path: default_geoip_mmdb_asn_path(),
+            geoip_ttl_secs: default_geoip_ttl_secs(),
+            abuse_ttl_secs: default_abuse_ttl_secs(),
+            enable_abuse_provider: default_intel_enable_abuse_provider(),
+            abuse_provider_api_key_env: default_abuse_provider_api_key_env(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -280,6 +311,24 @@ fn default_domain_ttl() -> u64 {
 }
 fn default_hash_ttl() -> u64 {
     86400
+}
+fn default_geoip_mmdb_city_path() -> String {
+    "data/geoip/GeoLite2-City.mmdb".to_string()
+}
+fn default_geoip_mmdb_asn_path() -> String {
+    "data/geoip/GeoLite2-ASN.mmdb".to_string()
+}
+fn default_geoip_ttl_secs() -> u64 {
+    86400
+}
+fn default_abuse_ttl_secs() -> u64 {
+    43200
+}
+fn default_intel_enable_abuse_provider() -> bool {
+    true
+}
+fn default_abuse_provider_api_key_env() -> String {
+    "DEEPMAIL_ABUSEIPDB_API_KEY".to_string()
 }
 fn default_url_analysis_timeout_ms() -> u64 {
     3000

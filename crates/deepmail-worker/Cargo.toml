@@ -32,6 +32,7 @@ regex = { workspace = true }
 lazy_static = { workspace = true }
 mailparse = { workspace = true }
 reqwest = { workspace = true }
+maxminddb = { workspace = true }
 hostname = "0.4"
 tracing-opentelemetry = { workspace = true }
 opentelemetry = { workspace = true }

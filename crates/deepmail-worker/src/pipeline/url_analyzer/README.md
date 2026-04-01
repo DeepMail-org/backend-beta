@@ -11,6 +11,12 @@ The URL Analyzer evaluates web links structurally to identify risks such as obfu
     - **Obfuscation Checks**: Identifies abnormally long URLs and deep subdomain chains used to evade filters.
     - **Encoding Analysis**: Looks for percent-encoded structural characters designed to fool basic parsers.
 
-## Zero-Network Policy (Phase 2)
+## Reputation Enrichment
 
-To maintain privacy and performance, this module operates purely statically offline. It does not issue HTTP requests to the target domains, preventing attackers from confirming email receipt via tracking pixels or unique payload delivery paths.
+- Structural signals are always computed offline.
+- If `DEEPMAIL_VIRUSTOTAL_API_KEY` is set, domain reputation is enriched from VirusTotal v3 (`/domains/{domain}`).
+- The enrichment score is stored in `reputation_score` and cached by domain in Redis.
+
+## Fail-Soft Behavior
+
+If VirusTotal is unavailable, rate-limited, or returns an error, the module returns structural analysis only and does not fail the pipeline.

@@ -36,5 +36,12 @@ graph TD
 3. [IOC Extractor](ioc_extractor/README.md) - Regex-based extraction of network and file indicators.
 4. [Phishing Keywords](phishing_keywords/README.md) - Static body scanning for deceptive language.
 5. [URL Analyzer](url_analyzer/README.md) - Heuristic structural domain analysis with Redis caching.
-6. [Attachment Analyzer](attachment_analyzer/README.md) - Entropy and Magic byte MIME checking with Hash lookups.
-7. [Threat Scoring](scoring/README.md) - 4-dimension weighted risk grading framework.
+6. [Attachment Analyzer](attachment_analyzer/README.md) - Entropy and Magic byte MIME checking with hash lookups.
+7. [Geo Intel](../geo_intel.rs) - MaxMind + Redis + SQLite TTL + AbuseIPDB IP enrichment.
+8. [Threat Scoring](scoring/README.md) - 4-dimension weighted risk grading framework.
+
+## Geo Intelligence Storage
+
+- IP IOC metadata stores geolocation and enrichment fields as JSON in `ioc_nodes.metadata`.
+- Canonical IP intel is persisted in SQLite table `ip_geo_intel` with TTL (`expires_at`).
+- Redis keys (`deepmail:cache:ip:<ip>`) are used as hot cache for low-latency lookups.

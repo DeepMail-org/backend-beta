@@ -120,6 +120,7 @@ async fn main() -> Result<()> {
                         cache,
                         redis: config.redis.clone(),
                         pipeline: config.pipeline.clone(),
+                        intel: config.intel.clone(),
                         sandbox: config.sandbox.clone(),
                         features: config.features.clone(),
                         tenant: config.tenant.clone(),

@@ -45,6 +45,64 @@ pub struct EmailAnalysisReport {
     pub job_progress: Vec<JobProgressEntry>,
     /// IOC nodes linked to this email.
     pub iocs: Vec<IocEntry>,
+    /// Geo-resolved points used by map UI.
+    pub geo_points: Vec<GeoPoint>,
+    /// Ordered sender-to-recipient received hops.
+    pub hop_timeline: Vec<HopPoint>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GeoPoint {
+    pub id: String,
+    pub ip: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub country: String,
+    pub city: Option<String>,
+    pub region: Option<String>,
+    pub asn: Option<u32>,
+    pub org: Option<String>,
+    pub risk: String,
+    pub abuse_confidence: Option<u8>,
+    pub is_tor: bool,
+    pub is_proxy: bool,
+    pub confidence_score: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HopPoint {
+    pub hop: usize,
+    pub from_host: Option<String>,
+    pub by_host: Option<String>,
+    pub ip: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IocGeoMetadata {
+    lat: f64,
+    lon: f64,
+    country: String,
+    city: Option<String>,
+    region: Option<String>,
+    asn: Option<u32>,
+    org: Option<String>,
+    abuse_confidence: Option<u8>,
+    is_tor: Option<bool>,
+    is_proxy: Option<bool>,
+    confidence_score: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HeaderAnalysisData {
+    received_hops: Vec<HeaderHop>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HeaderHop {
+    hop: usize,
+    from_host: Option<String>,
+    by_host: Option<String>,
+    ip: Option<String>,
 }
 
 /// Core email record.
@@ -219,15 +277,115 @@ async fn results_handler(
         rows.filter_map(|r| r.ok()).collect()
     };
 
+    let geo_points = build_geo_points(&conn, &iocs)?;
+    let hop_timeline = build_hop_timeline(&analysis_results);
+
     let report = EmailAnalysisReport {
         email,
         analysis_results,
         job_progress,
         iocs,
+        geo_points,
+        hop_timeline,
     };
 
     tracing::info!(email_id = %email_id, "Results fetched");
     Ok((StatusCode::OK, Json(report)))
+}
+
+fn risk_for_ioc_type(ioc_type: &str) -> String {
+    match ioc_type {
+        "ip" => "medium".to_string(),
+        "url" | "domain" => "high".to_string(),
+        _ => "low".to_string(),
+    }
+}
+
+fn build_geo_points(conn: &rusqlite::Connection, iocs: &[IocEntry]) -> Result<Vec<GeoPoint>, DeepMailError> {
+    let mut points = Vec::new();
+    for ioc in iocs {
+        if ioc.ioc_type != "ip" {
+            continue;
+        }
+
+        let mut from_meta: Option<IocGeoMetadata> = None;
+        if let Some(raw_meta) = &ioc.metadata {
+            from_meta = serde_json::from_str::<IocGeoMetadata>(raw_meta).ok();
+        }
+
+        let fallback = conn
+            .query_row(
+                "SELECT lat, lon, country, city, region, asn, org,
+                        abuse_confidence, is_tor, is_proxy, confidence_score
+                 FROM ip_geo_intel WHERE ip = ?1",
+                rusqlite::params![ioc.value],
+                |row| {
+                    Ok(IocGeoMetadata {
+                        lat: row.get(0)?,
+                        lon: row.get(1)?,
+                        country: row.get(2)?,
+                        city: row.get(3)?,
+                        region: row.get(4)?,
+                        asn: row.get(5)?,
+                        org: row.get(6)?,
+                        abuse_confidence: row.get(7)?,
+                        is_tor: Some(row.get::<_, i64>(8)? == 1),
+                        is_proxy: Some(row.get::<_, i64>(9)? == 1),
+                        confidence_score: row.get(10).ok(),
+                    })
+                },
+            )
+            .ok();
+
+        let geo = match from_meta.or(fallback) {
+            Some(g) => g,
+            None => continue,
+        };
+
+        points.push(GeoPoint {
+            id: ioc.id.clone(),
+            ip: ioc.value.clone(),
+            lat: geo.lat,
+            lon: geo.lon,
+            country: geo.country,
+            city: geo.city,
+            region: geo.region,
+            asn: geo.asn,
+            org: geo.org,
+            risk: risk_for_ioc_type(&ioc.ioc_type),
+            abuse_confidence: geo.abuse_confidence,
+            is_tor: geo.is_tor.unwrap_or(false),
+            is_proxy: geo.is_proxy.unwrap_or(false),
+            confidence_score: geo.confidence_score.unwrap_or(0.6),
+        });
+    }
+
+    Ok(points)
+}
+
+fn build_hop_timeline(analysis_results: &[AnalysisResultEntry]) -> Vec<HopPoint> {
+    let header_data = analysis_results
+        .iter()
+        .find(|entry| entry.result_type == "header_analysis")
+        .and_then(|entry| serde_json::from_value::<HeaderAnalysisData>(entry.data.clone()).ok());
+
+    let mut hops: Vec<HopPoint> = header_data
+        .map(|header| {
+            header
+                .received_hops
+                .into_iter()
+                .map(|hop| HopPoint {
+                    hop: hop.hop,
+                    from_host: hop.from_host,
+                    by_host: hop.by_host,
+                    ip: hop.ip,
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    hops.sort_by_key(|hop| std::cmp::Reverse(hop.hop));
+    hops
 }
 
 async fn enforce_rate_limits(

@@ -40,6 +40,14 @@ ip_ttl_secs = 3600
 domain_ttl_secs = 3600
 hash_ttl_secs = 86400
 
+[intel]
+geoip_mmdb_city_path = "data/geoip/GeoLite2-City.mmdb"
+geoip_mmdb_asn_path = "data/geoip/GeoLite2-ASN.mmdb"
+geoip_ttl_secs = 86400
+abuse_ttl_secs = 43200
+enable_abuse_provider = true
+abuse_provider_api_key_env = "DEEPMAIL_ABUSEIPDB_API_KEY"
+
 [pipeline]
 url_analysis_timeout_ms = 3000
 attachment_analysis_timeout_ms = 5000

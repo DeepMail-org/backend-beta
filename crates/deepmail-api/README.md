@@ -29,6 +29,7 @@ in this service — all analysis is offloaded to workers via the Redis job queue
 |---|---|---|
 | `POST` | `/api/v1/upload` | Submit an email file for analysis |
 | `GET` | `/api/v1/health` | Health/readiness probe |
+| `GET` | `/api/v1/results/:email_id` | Full report including `geo_points` and `hop_timeline` |
 
 ## Entry Point
 
@@ -74,6 +75,18 @@ Applied bottom-to-top on every request:
 - **No X-Forwarded-For trust** — uses direct connecting IP
 - **Error messages** — never leak internal paths or stack traces
 - **Graceful shutdown** — handles SIGINT and SIGTERM for clean connection draining
+
+## Results Payload Extensions
+
+`routes/results.rs` now builds additional map-ready fields:
+
+- `geo_points`: resolved IP coordinates + ASN/org + abuse/TOR/proxy flags
+- `hop_timeline`: ordered sender-to-recipient path from `Received` headers
+
+Core helper functions in `routes/results.rs`:
+
+- `build_geo_points` — reads IOC metadata / `ip_geo_intel` fallback and normalizes map nodes
+- `build_hop_timeline` — extracts and orders relay hops from stored header analysis
 
 ## Future Extensibility
 

@@ -22,6 +22,7 @@
 pub mod attachment_analyzer;
 pub mod email_parser;
 pub mod geoip;
+pub mod geo_intel;
 pub mod header_analysis;
 pub mod ioc_extractor;
 pub mod phishing_keywords;
@@ -34,7 +35,8 @@ use deepmail_common::audit;
 use deepmail_common::cache::ThreatCache;
 use deepmail_common::circuit_breaker::CircuitBreaker;
 use deepmail_common::config::{
-    CircuitBreakerConfig, FeatureFlags, PipelineConfig, RedisConfig, SandboxConfig, TenantConfig,
+    CircuitBreakerConfig, FeatureFlags, IntelConfig, PipelineConfig, RedisConfig, SandboxConfig,
+    TenantConfig,
 };
 use deepmail_common::db::DbPool;
 use deepmail_common::errors::DeepMailError;
@@ -70,6 +72,8 @@ pub struct PipelineContext {
     pub redis: RedisConfig,
     /// Pipeline execution policy.
     pub pipeline: PipelineConfig,
+    /// Geo intelligence provider and cache policy.
+    pub intel: IntelConfig,
     /// Sandbox execution policy.
     pub sandbox: SandboxConfig,
     /// Feature flags.
@@ -186,7 +190,7 @@ pub async fn run_pipeline(ctx: &PipelineContext) -> Result<(), DeepMailError> {
     record_stage_start(&ctx.db_pool, &ctx.email_id, "ioc_extraction")?;
 
     let iocs = ioc_extractor::extract_iocs(&parsed);
-    store_iocs(&ctx.db_pool, &ctx.email_id, &iocs).await?;
+    store_iocs(&ctx.db_pool, &ctx.cache, &ctx.intel, &ctx.email_id, &iocs).await?;
 
     record_stage_complete(
         &ctx.db_pool,
@@ -759,15 +763,21 @@ async fn simulate_external_intel_provider() -> Result<(), DeepMailError> {
 }
 
 /// Upsert IOC nodes and create email→IOC relations in the graph tables.
-async fn store_iocs(pool: &DbPool, email_id: &str, iocs: &ExtractedIocs) -> Result<(), DeepMailError> {
+async fn store_iocs(
+    pool: &DbPool,
+    cache: &ThreatCache,
+    intel_config: &IntelConfig,
+    email_id: &str,
+    iocs: &ExtractedIocs,
+) -> Result<(), DeepMailError> {
     // 1. Perform GeoIP lookups FIRST (before getting DB connection)
     // This avoids holding a non-Send rusqlite::Connection across await points.
     let mut ip_metadata = std::collections::HashMap::new();
     for ip in &iocs.ips {
-        if let Ok(geo) = geoip::lookup_geoip(ip).await {
+        if let Ok(Some(geo)) = geo_intel::resolve_ip_intel(cache, pool, intel_config, ip).await {
             if let Ok(meta) = serde_json::to_string(&geo) {
                 ip_metadata.insert(ip.clone(), meta);
-                tracing::info!(ip = ip, "GeoIP lookup successful");
+                tracing::info!(ip = ip, "Geo intel lookup successful");
             }
         }
     }

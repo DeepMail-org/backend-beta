@@ -10,7 +10,7 @@
 //! - Redirect chain resolution (follow 301/302 hops)
 //! - Domain age and WHOIS lookup via external API
 //! - Phishing similarity scoring (brand impersonation detection)
-//! - Domain reputation scoring via threat intel feeds (VirusTotal, URLhaus)
+//! - Multi-provider reputation scoring (URLhaus and internal intel)
 //! - URL shortener expansion
 //!
 //! # Security
@@ -22,6 +22,29 @@ use serde::{Deserialize, Serialize};
 
 use deepmail_common::cache::ThreatCache;
 use deepmail_common::errors::DeepMailError;
+
+#[derive(Debug, Deserialize)]
+struct VirusTotalDomainResponse {
+    data: VirusTotalDomainData,
+}
+
+#[derive(Debug, Deserialize)]
+struct VirusTotalDomainData {
+    attributes: VirusTotalDomainAttributes,
+}
+
+#[derive(Debug, Deserialize)]
+struct VirusTotalDomainAttributes {
+    last_analysis_stats: VirusTotalLastAnalysisStats,
+}
+
+#[derive(Debug, Deserialize)]
+struct VirusTotalLastAnalysisStats {
+    malicious: u32,
+    suspicious: u32,
+    harmless: u32,
+    undetected: u32,
+}
 
 /// Structural analysis result for a single URL.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,7 +134,14 @@ async fn analyze_single_url_cached(
     }
 
     // ── Offline analysis ──────────────────────────────────────────────────────
-    let result = analyze_single_url(url);
+    let mut result = analyze_single_url(url);
+
+    // Optional VirusTotal enrichment (enabled when API key env is present).
+    if let Some(domain) = result.domain.as_deref() {
+        if let Some(score) = lookup_virustotal_domain_score(domain).await {
+            result.reputation_score = Some(score);
+        }
+    }
 
     // ── Cache population ─────────────────────────────────────────────────────
     if let Some(c) = cache {
@@ -119,6 +149,40 @@ async fn analyze_single_url_cached(
     }
 
     Ok(result)
+}
+
+async fn lookup_virustotal_domain_score(domain: &str) -> Option<f64> {
+    let api_key = std::env::var("DEEPMAIL_VIRUSTOTAL_API_KEY").ok()?;
+    if api_key.trim().is_empty() {
+        return None;
+    }
+
+    let url = format!("https://www.virustotal.com/api/v3/domains/{domain}");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .ok()?;
+
+    let response = client
+        .get(url)
+        .header("x-apikey", api_key)
+        .send()
+        .await
+        .ok()?;
+
+    if !response.status().is_success() {
+        return None;
+    }
+
+    let payload: VirusTotalDomainResponse = response.json().await.ok()?;
+    let stats = payload.data.attributes.last_analysis_stats;
+    let total = stats.malicious + stats.suspicious + stats.harmless + stats.undetected;
+    if total == 0 {
+        return None;
+    }
+
+    let weighted_bad = (stats.malicious as f64) + (stats.suspicious as f64 * 0.5);
+    Some((weighted_bad / total as f64 * 100.0).clamp(0.0, 100.0))
 }
 
 /// Perform pure offline structural analysis of a single URL.
