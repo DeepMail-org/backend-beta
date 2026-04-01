@@ -20,3 +20,9 @@ The URL Analyzer evaluates web links structurally to identify risks such as obfu
 ## Fail-Soft Behavior
 
 If VirusTotal is unavailable, rate-limited, or returns an error, the module returns structural analysis only and does not fail the pipeline.
+
+## Reliability Controls
+
+- Provider-specific circuit breaker prevents repeated failing calls.
+- Retry budget with bounded exponential backoff reduces transient error impact.
+- Tracing counters emit provider success/failure/timeout/retry/circuit-open totals.

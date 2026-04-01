@@ -41,12 +41,30 @@ pub struct IntelConfig {
     pub geoip_mmdb_asn_path: String,
     #[serde(default = "default_geoip_ttl_secs")]
     pub geoip_ttl_secs: u64,
+    #[serde(default = "default_geoip_max_age_days")]
+    pub geoip_max_age_days: u32,
+    #[serde(default = "default_fail_on_stale_geoip")]
+    pub fail_on_stale_geoip: bool,
     #[serde(default = "default_abuse_ttl_secs")]
     pub abuse_ttl_secs: u64,
     #[serde(default = "default_intel_enable_abuse_provider")]
     pub enable_abuse_provider: bool,
     #[serde(default = "default_abuse_provider_api_key_env")]
     pub abuse_provider_api_key_env: String,
+    #[serde(default = "default_virustotal_ttl_secs")]
+    pub virustotal_ttl_secs: u64,
+    #[serde(default = "default_enable_virustotal_provider")]
+    pub enable_virustotal_provider: bool,
+    #[serde(default = "default_virustotal_api_key_env")]
+    pub virustotal_api_key_env: String,
+    #[serde(default = "default_provider_timeout_ms")]
+    pub provider_timeout_ms: u64,
+    #[serde(default = "default_provider_max_retries")]
+    pub provider_max_retries: u32,
+    #[serde(default = "default_provider_base_backoff_ms")]
+    pub provider_base_backoff_ms: u64,
+    #[serde(default = "default_provider_max_backoff_ms")]
+    pub provider_max_backoff_ms: u64,
 }
 
 impl Default for IntelConfig {
@@ -55,9 +73,18 @@ impl Default for IntelConfig {
             geoip_mmdb_city_path: default_geoip_mmdb_city_path(),
             geoip_mmdb_asn_path: default_geoip_mmdb_asn_path(),
             geoip_ttl_secs: default_geoip_ttl_secs(),
+            geoip_max_age_days: default_geoip_max_age_days(),
+            fail_on_stale_geoip: default_fail_on_stale_geoip(),
             abuse_ttl_secs: default_abuse_ttl_secs(),
             enable_abuse_provider: default_intel_enable_abuse_provider(),
             abuse_provider_api_key_env: default_abuse_provider_api_key_env(),
+            virustotal_ttl_secs: default_virustotal_ttl_secs(),
+            enable_virustotal_provider: default_enable_virustotal_provider(),
+            virustotal_api_key_env: default_virustotal_api_key_env(),
+            provider_timeout_ms: default_provider_timeout_ms(),
+            provider_max_retries: default_provider_max_retries(),
+            provider_base_backoff_ms: default_provider_base_backoff_ms(),
+            provider_max_backoff_ms: default_provider_max_backoff_ms(),
         }
     }
 }
@@ -321,6 +348,12 @@ fn default_geoip_mmdb_asn_path() -> String {
 fn default_geoip_ttl_secs() -> u64 {
     86400
 }
+fn default_geoip_max_age_days() -> u32 {
+    30
+}
+fn default_fail_on_stale_geoip() -> bool {
+    true
+}
 fn default_abuse_ttl_secs() -> u64 {
     43200
 }
@@ -329,6 +362,27 @@ fn default_intel_enable_abuse_provider() -> bool {
 }
 fn default_abuse_provider_api_key_env() -> String {
     "DEEPMAIL_ABUSEIPDB_API_KEY".to_string()
+}
+fn default_virustotal_ttl_secs() -> u64 {
+    21600
+}
+fn default_enable_virustotal_provider() -> bool {
+    true
+}
+fn default_virustotal_api_key_env() -> String {
+    "DEEPMAIL_VIRUSTOTAL_API_KEY".to_string()
+}
+fn default_provider_timeout_ms() -> u64 {
+    5000
+}
+fn default_provider_max_retries() -> u32 {
+    2
+}
+fn default_provider_base_backoff_ms() -> u64 {
+    200
+}
+fn default_provider_max_backoff_ms() -> u64 {
+    3000
 }
 fn default_url_analysis_timeout_ms() -> u64 {
     3000
@@ -604,6 +658,102 @@ impl AppConfig {
             ));
         }
 
+        apply_external_secret_provider(
+            "DEEPMAIL_ABUSEIPDB_API_KEY",
+            "DEEPMAIL_ABUSEIPDB_API_KEY_FILE",
+            "DEEPMAIL_ABUSEIPDB_API_KEY_CMD",
+        )?;
+        apply_external_secret_provider(
+            "DEEPMAIL_VIRUSTOTAL_API_KEY",
+            "DEEPMAIL_VIRUSTOTAL_API_KEY_FILE",
+            "DEEPMAIL_VIRUSTOTAL_API_KEY_CMD",
+        )?;
+
+        validate_production_secrets(&self)?;
+
         Ok(self)
     }
+}
+
+fn apply_external_secret_provider(
+    target_env: &str,
+    file_env: &str,
+    cmd_env: &str,
+) -> Result<(), DeepMailError> {
+    if let Ok(secret_file) = std::env::var(file_env) {
+        let secret = std::fs::read_to_string(&secret_file).map_err(|e| {
+            DeepMailError::Config(format!(
+                "Failed to read secret file '{secret_file}' for {target_env}: {e}"
+            ))
+        })?;
+        std::env::set_var(target_env, secret.trim());
+    }
+
+    if let Ok(secret_cmd) = std::env::var(cmd_env) {
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&secret_cmd)
+            .output()
+            .map_err(|e| {
+                DeepMailError::Config(format!(
+                    "Failed to execute secret command '{secret_cmd}' for {target_env}: {e}"
+                ))
+            })?;
+        if !output.status.success() {
+            return Err(DeepMailError::Config(format!(
+                "Secret command for {target_env} failed with status: {}",
+                output.status
+            )));
+        }
+        let secret = String::from_utf8(output.stdout).map_err(|e| {
+            DeepMailError::Config(format!(
+                "Secret command output for {target_env} was not UTF-8: {e}"
+            ))
+        })?;
+        std::env::set_var(target_env, secret.trim());
+    }
+
+    Ok(())
+}
+
+fn is_placeholder_secret(value: &str) -> bool {
+    let v = value.trim().to_lowercase();
+    v.is_empty() || v == "replace_me" || v == "change_me_in_production"
+}
+
+fn validate_production_secrets(config: &AppConfig) -> Result<(), DeepMailError> {
+    let env = std::env::var("DEEPMAIL_ENV").unwrap_or_else(|_| "development".to_string());
+    if env != "production" {
+        return Ok(());
+    }
+
+    if is_placeholder_secret(&config.security.jwt_secret) {
+        return Err(DeepMailError::Config(
+            "Production startup blocked: JWT secret is missing or placeholder".to_string(),
+        ));
+    }
+
+    if config.features.enable_intel_providers && config.intel.enable_abuse_provider {
+        let abuse = std::env::var(&config.intel.abuse_provider_api_key_env)
+            .unwrap_or_else(|_| "".to_string());
+        if is_placeholder_secret(&abuse) {
+            return Err(DeepMailError::Config(format!(
+                "Production startup blocked: {} is missing or placeholder",
+                config.intel.abuse_provider_api_key_env
+            )));
+        }
+    }
+
+    if config.features.enable_intel_providers && config.intel.enable_virustotal_provider {
+        let vt =
+            std::env::var(&config.intel.virustotal_api_key_env).unwrap_or_else(|_| "".to_string());
+        if is_placeholder_secret(&vt) {
+            return Err(DeepMailError::Config(format!(
+                "Production startup blocked: {} is missing or placeholder",
+                config.intel.virustotal_api_key_env
+            )));
+        }
+    }
+
+    Ok(())
 }

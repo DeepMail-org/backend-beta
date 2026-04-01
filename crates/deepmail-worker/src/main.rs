@@ -37,9 +37,29 @@ async fn main() -> Result<()> {
     tracing::info!("DeepMail Worker starting...");
     tracing::info!("Configuration loaded");
 
+    if let Err(err) = pipeline::geo_intel::validate_geoip_database_freshness(&config.intel) {
+        if config.intel.fail_on_stale_geoip {
+            return Err(err);
+        }
+        tracing::warn!(error = %err, "GeoLite2 freshness check warning");
+    }
+
     // ── Initialise database pool ──────────────────────────────────────────────
     let db_pool = db::init_pool(&config.database)?;
     tracing::info!("Database pool initialised");
+
+    {
+        let calibration_pool = db_pool.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
+            loop {
+                interval.tick().await;
+                if let Err(err) = pipeline::calibration::run_calibration_job(&calibration_pool) {
+                    tracing::warn!(error = %err, "Calibration job failed");
+                }
+            }
+        });
+    }
 
     // ── Connect to Redis and set up consumer group ────────────────────────────
     let queue = Arc::new(Mutex::new(RedisQueue::new(&config.redis).await?));

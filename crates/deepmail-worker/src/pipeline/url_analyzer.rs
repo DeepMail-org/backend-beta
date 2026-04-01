@@ -19,9 +19,21 @@
 //! - Cache keys are sanitised (colons and spaces replaced with underscores)
 
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
+use std::time::Duration;
 
 use deepmail_common::cache::ThreatCache;
+use deepmail_common::circuit_breaker::CircuitBreaker;
+use deepmail_common::config::{CircuitBreakerConfig, IntelConfig};
 use deepmail_common::errors::DeepMailError;
+
+static VT_BREAKER: OnceLock<CircuitBreaker> = OnceLock::new();
+static VT_SUCCESS: AtomicU64 = AtomicU64::new(0);
+static VT_FAILURE: AtomicU64 = AtomicU64::new(0);
+static VT_TIMEOUT: AtomicU64 = AtomicU64::new(0);
+static VT_RETRIES: AtomicU64 = AtomicU64::new(0);
+static VT_CIRCUIT_OPEN: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Deserialize)]
 struct VirusTotalDomainResponse {
@@ -98,11 +110,13 @@ const SUSPICIOUS_TLDS: &[&str] = &[
 pub async fn analyze_urls(
     urls: &[String],
     cache: Option<&ThreatCache>,
+    intel_config: &IntelConfig,
+    breaker_config: &CircuitBreakerConfig,
 ) -> Result<Vec<UrlAnalysisResult>, DeepMailError> {
     let mut results = Vec::with_capacity(urls.len());
 
     for url in urls {
-        let result = analyze_single_url_cached(url, cache).await?;
+        let result = analyze_single_url_cached(url, cache, intel_config, breaker_config).await?;
         results.push(result);
     }
 
@@ -116,6 +130,8 @@ pub async fn analyze_urls(
 async fn analyze_single_url_cached(
     url: &str,
     cache: Option<&ThreatCache>,
+    intel_config: &IntelConfig,
+    breaker_config: &CircuitBreakerConfig,
 ) -> Result<UrlAnalysisResult, DeepMailError> {
     let domain = extract_domain(url);
     let cache_key = domain.as_deref().unwrap_or(url);
@@ -138,7 +154,7 @@ async fn analyze_single_url_cached(
 
     // Optional VirusTotal enrichment (enabled when API key env is present).
     if let Some(domain) = result.domain.as_deref() {
-        if let Some(score) = lookup_virustotal_domain_score(domain).await {
+        if let Some(score) = lookup_virustotal_domain_score(domain, intel_config, breaker_config).await {
             result.reputation_score = Some(score);
         }
     }
@@ -151,38 +167,107 @@ async fn analyze_single_url_cached(
     Ok(result)
 }
 
-async fn lookup_virustotal_domain_score(domain: &str) -> Option<f64> {
-    let api_key = std::env::var("DEEPMAIL_VIRUSTOTAL_API_KEY").ok()?;
+fn provider_backoff_ms(config: &IntelConfig, attempt: u32) -> u64 {
+    let growth = 1u64 << attempt.min(10);
+    (config.provider_base_backoff_ms * growth).min(config.provider_max_backoff_ms)
+}
+
+async fn lookup_virustotal_domain_score(
+    domain: &str,
+    intel_config: &IntelConfig,
+    breaker_config: &CircuitBreakerConfig,
+) -> Option<f64> {
+    if !intel_config.enable_virustotal_provider {
+        return None;
+    }
+
+    let api_key = std::env::var(&intel_config.virustotal_api_key_env).ok()?;
     if api_key.trim().is_empty() {
+        return None;
+    }
+
+    let breaker =
+        VT_BREAKER.get_or_init(|| CircuitBreaker::new("virustotal", breaker_config.clone()));
+    if !breaker.allow().await {
+        VT_CIRCUIT_OPEN.fetch_add(1, Ordering::Relaxed);
+        tracing::warn!(
+            provider = "virustotal",
+            event = "circuit_open",
+            total_circuit_open = VT_CIRCUIT_OPEN.load(Ordering::Relaxed),
+            "VirusTotal request skipped by circuit breaker"
+        );
         return None;
     }
 
     let url = format!("https://www.virustotal.com/api/v3/domains/{domain}");
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
+        .timeout(Duration::from_millis(intel_config.provider_timeout_ms))
         .build()
         .ok()?;
 
-    let response = client
-        .get(url)
-        .header("x-apikey", api_key)
-        .send()
-        .await
-        .ok()?;
+    let attempts = intel_config.provider_max_retries + 1;
+    for attempt in 0..attempts {
+        let response = client.get(&url).header("x-apikey", &api_key).send().await;
 
-    if !response.status().is_success() {
-        return None;
+        match response {
+            Ok(resp) if resp.status().is_success() => {
+                let payload: VirusTotalDomainResponse = match resp.json().await {
+                    Ok(v) => v,
+                    Err(_) => {
+                        VT_FAILURE.fetch_add(1, Ordering::Relaxed);
+                        let _ = breaker.on_failure().await;
+                        return None;
+                    }
+                };
+                let stats = payload.data.attributes.last_analysis_stats;
+                let total = stats.malicious + stats.suspicious + stats.harmless + stats.undetected;
+                if total == 0 {
+                    return None;
+                }
+                let weighted_bad = (stats.malicious as f64) + (stats.suspicious as f64 * 0.5);
+                VT_SUCCESS.fetch_add(1, Ordering::Relaxed);
+                let _ = breaker.on_success().await;
+                tracing::info!(
+                    provider = "virustotal",
+                    event = "success",
+                    total_success = VT_SUCCESS.load(Ordering::Relaxed),
+                    total_failures = VT_FAILURE.load(Ordering::Relaxed),
+                    total_timeouts = VT_TIMEOUT.load(Ordering::Relaxed),
+                    total_retries = VT_RETRIES.load(Ordering::Relaxed),
+                    "VirusTotal enrichment success"
+                );
+                return Some((weighted_bad / total as f64 * 100.0).clamp(0.0, 100.0));
+            }
+            Ok(resp) => {
+                VT_FAILURE.fetch_add(1, Ordering::Relaxed);
+                if attempt + 1 < attempts {
+                    VT_RETRIES.fetch_add(1, Ordering::Relaxed);
+                    tokio::time::sleep(Duration::from_millis(provider_backoff_ms(intel_config, attempt))).await;
+                    continue;
+                }
+                let _ = breaker.on_failure().await;
+                tracing::warn!(provider = "virustotal", status = %resp.status(), event = "failed", "VirusTotal request failed");
+                return None;
+            }
+            Err(err) => {
+                if err.is_timeout() {
+                    VT_TIMEOUT.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    VT_FAILURE.fetch_add(1, Ordering::Relaxed);
+                }
+                if attempt + 1 < attempts {
+                    VT_RETRIES.fetch_add(1, Ordering::Relaxed);
+                    tokio::time::sleep(Duration::from_millis(provider_backoff_ms(intel_config, attempt))).await;
+                    continue;
+                }
+                let _ = breaker.on_failure().await;
+                tracing::warn!(provider = "virustotal", error = %err, event = "error", "VirusTotal request error");
+                return None;
+            }
+        }
     }
 
-    let payload: VirusTotalDomainResponse = response.json().await.ok()?;
-    let stats = payload.data.attributes.last_analysis_stats;
-    let total = stats.malicious + stats.suspicious + stats.harmless + stats.undetected;
-    if total == 0 {
-        return None;
-    }
-
-    let weighted_bad = (stats.malicious as f64) + (stats.suspicious as f64 * 0.5);
-    Some((weighted_bad / total as f64 * 100.0).clamp(0.0, 100.0))
+    None
 }
 
 /// Perform pure offline structural analysis of a single URL.

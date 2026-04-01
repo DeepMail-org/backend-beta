@@ -20,6 +20,7 @@
 //! - All errors transition the job to `Failed` with a descriptive message
 
 pub mod attachment_analyzer;
+pub mod calibration;
 pub mod email_parser;
 pub mod geoip;
 pub mod geo_intel;
@@ -190,7 +191,15 @@ pub async fn run_pipeline(ctx: &PipelineContext) -> Result<(), DeepMailError> {
     record_stage_start(&ctx.db_pool, &ctx.email_id, "ioc_extraction")?;
 
     let iocs = ioc_extractor::extract_iocs(&parsed);
-    store_iocs(&ctx.db_pool, &ctx.cache, &ctx.intel, &ctx.email_id, &iocs).await?;
+    store_iocs(
+        &ctx.db_pool,
+        &ctx.cache,
+        &ctx.intel,
+        &ctx.circuit_breaker,
+        &ctx.email_id,
+        &iocs,
+    )
+    .await?;
 
     record_stage_complete(
         &ctx.db_pool,
@@ -300,7 +309,12 @@ pub async fn run_pipeline(ctx: &PipelineContext) -> Result<(), DeepMailError> {
         let cache = ctx.cache.clone();
         match tokio::time::timeout(
             url_timeout,
-            url_analyzer::analyze_urls(&urls_to_analyze, Some(&cache)),
+            url_analyzer::analyze_urls(
+                &urls_to_analyze,
+                Some(&cache),
+                &ctx.intel,
+                &ctx.circuit_breaker,
+            ),
         )
         .await
         {
@@ -430,13 +444,15 @@ pub async fn run_pipeline(ctx: &PipelineContext) -> Result<(), DeepMailError> {
     update_status(&ctx.db_pool, &ctx.email_id, &EmailStatus::Scoring)?;
     record_stage_start(&ctx.db_pool, &ctx.email_id, "threat_scoring")?;
 
-    let threat_score = scoring::calculate_threat_score(
+    let mut threat_score = scoring::calculate_threat_score(
         &header_result,
         &iocs,
         &url_results,
         &attachment_results,
         &phishing,
     );
+
+    calibration::apply_latest_calibration(&ctx.db_pool, &mut threat_score)?;
 
     record_stage_complete(
         &ctx.db_pool,
@@ -767,6 +783,7 @@ async fn store_iocs(
     pool: &DbPool,
     cache: &ThreatCache,
     intel_config: &IntelConfig,
+    breaker_config: &CircuitBreakerConfig,
     email_id: &str,
     iocs: &ExtractedIocs,
 ) -> Result<(), DeepMailError> {
@@ -774,7 +791,9 @@ async fn store_iocs(
     // This avoids holding a non-Send rusqlite::Connection across await points.
     let mut ip_metadata = std::collections::HashMap::new();
     for ip in &iocs.ips {
-        if let Ok(Some(geo)) = geo_intel::resolve_ip_intel(cache, pool, intel_config, ip).await {
+        if let Ok(Some(geo)) =
+            geo_intel::resolve_ip_intel(cache, pool, intel_config, breaker_config, ip).await
+        {
             if let Ok(meta) = serde_json::to_string(&geo) {
                 ip_metadata.insert(ip.clone(), meta);
                 tracing::info!(ip = ip, "Geo intel lookup successful");

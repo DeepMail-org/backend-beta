@@ -71,10 +71,19 @@ geoip_mmdb_city_path = "data/geoip/GeoLite2-City.mmdb"
 geoip_mmdb_asn_path = "data/geoip/GeoLite2-ASN.mmdb"
 # TTL for resolved geo intel and abuse intel caches
 geoip_ttl_secs = 86400
+geoip_max_age_days = 30
+fail_on_stale_geoip = true
 abuse_ttl_secs = 43200
+virustotal_ttl_secs = 21600
 # Abuse enrichment provider settings
 enable_abuse_provider = true
+enable_virustotal_provider = true
 abuse_provider_api_key_env = "DEEPMAIL_ABUSEIPDB_API_KEY"
+virustotal_api_key_env = "DEEPMAIL_VIRUSTOTAL_API_KEY"
+provider_timeout_ms = 5000
+provider_max_retries = 2
+provider_base_backoff_ms = 200
+provider_max_backoff_ms = 3000
 
 [pipeline]
 url_analysis_timeout_ms = 3000

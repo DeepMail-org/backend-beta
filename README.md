@@ -106,3 +106,11 @@ Store real keys only in local ignored env files (`.env.local`) or secret provide
 - `GET /api/v1/results/:email_id` now returns:
   - `geo_points` for map rendering
   - `hop_timeline` parsed from the `Received` chain
+
+## Reliability and Safety Controls
+
+- Provider-level circuit breakers for AbuseIPDB and VirusTotal
+- Retry budgets with bounded exponential backoff per external provider
+- Telemetry counters for provider success/failure/timeout/retry/circuit-open events
+- GeoLite2 startup freshness checks (age threshold configurable)
+- Production startup secret guard blocks placeholder credentials

@@ -42,6 +42,13 @@ Redis Stream  ──►  Consumer Loop  ──►  Analysis Pipeline  ──► 
 
 All provider integrations are fail-soft (pipeline continues if provider call fails).
 
+## Reliability Controls
+
+- **Circuit breakers**: separate breakers for AbuseIPDB and VirusTotal providers
+- **Retry budgets**: capped retries with bounded backoff per provider call
+- **Telemetry counters**: success/failure/timeout/retry/circuit-open events emitted via tracing
+- **Calibration loop**: periodic score calibration job (`pipeline/calibration.rs`) adjusts scoring multiplier from analyst feedback
+
 ## Previous/Future Roadmap
 
 The full analysis pipeline will process jobs in this order:

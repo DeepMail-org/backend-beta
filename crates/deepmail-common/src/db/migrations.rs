@@ -442,6 +442,36 @@ const MIGRATIONS: &[Migration] = &[
                 ON ip_geo_intel(confidence_score DESC);
         ",
     },
+    Migration {
+        name: "019_add_intel_feedback_and_calibration",
+        sql: "
+            CREATE TABLE IF NOT EXISTS analyst_feedback (
+                id          TEXT PRIMARY KEY,
+                email_id    TEXT NOT NULL,
+                verdict     TEXT NOT NULL,
+                note        TEXT,
+                feedback_by TEXT,
+                feedback_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (email_id) REFERENCES emails(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_analyst_feedback_email
+                ON analyst_feedback(email_id, feedback_at);
+            CREATE INDEX IF NOT EXISTS idx_analyst_feedback_verdict
+                ON analyst_feedback(verdict, feedback_at);
+
+            CREATE TABLE IF NOT EXISTS intel_calibration (
+                id                          TEXT PRIMARY KEY,
+                window_days                 INTEGER NOT NULL,
+                sample_count                INTEGER NOT NULL,
+                false_positive_count        INTEGER NOT NULL,
+                confirmed_malicious_count   INTEGER NOT NULL,
+                score_multiplier            REAL NOT NULL,
+                created_at                  TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_intel_calibration_created
+                ON intel_calibration(created_at DESC);
+        ",
+    },
 ];
 
 pub const MIGRATION_COUNT: u32 = (MIGRATIONS.len() - 1) as u32;
@@ -500,4 +530,35 @@ pub fn run_migrations(conn: &Connection) -> Result<(), DeepMailError> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migration_rollback_smoke() {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        run_migrations(&conn).expect("run migrations");
+
+        let tx = conn.unchecked_transaction().expect("start tx");
+        tx.execute(
+            "INSERT INTO intel_calibration (
+                id, window_days, sample_count, false_positive_count,
+                confirmed_malicious_count, score_multiplier, created_at
+            ) VALUES (?1, 30, 10, 2, 8, 1.05, datetime('now'))",
+            rusqlite::params!["smoke-row"],
+        )
+        .expect("insert calibration row");
+        tx.rollback().expect("rollback tx");
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM intel_calibration WHERE id = 'smoke-row'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count calibration rows");
+        assert_eq!(count, 0);
+    }
 }

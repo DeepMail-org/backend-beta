@@ -1,4 +1,8 @@
 use std::net::{IpAddr, Ipv4Addr};
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
+use std::time::{Duration as StdDuration, SystemTime};
 
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
@@ -6,9 +10,19 @@ use maxminddb::{geoip2, Reader};
 use serde::{Deserialize, Serialize};
 
 use deepmail_common::cache::ThreatCache;
-use deepmail_common::config::IntelConfig;
+use deepmail_common::circuit_breaker::CircuitBreaker;
+use deepmail_common::config::{CircuitBreakerConfig, IntelConfig};
 use deepmail_common::db::DbPool;
 use deepmail_common::errors::DeepMailError;
+
+static ABUSE_BREAKER: OnceLock<CircuitBreaker> = OnceLock::new();
+static ABUSE_SUCCESS: AtomicU64 = AtomicU64::new(0);
+static ABUSE_FAILURE: AtomicU64 = AtomicU64::new(0);
+static ABUSE_TIMEOUT: AtomicU64 = AtomicU64::new(0);
+static ABUSE_RETRIES: AtomicU64 = AtomicU64::new(0);
+static ABUSE_CIRCUIT_OPEN: AtomicU64 = AtomicU64::new(0);
+static GEO_CACHE_HIT: AtomicU64 = AtomicU64::new(0);
+static GEO_CACHE_MISS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeoIntel {
@@ -91,6 +105,66 @@ fn compute_confidence(
         score += 0.05;
     }
     score.clamp(0.0, 1.0)
+}
+
+fn provider_backoff_ms(config: &IntelConfig, attempt: u32) -> u64 {
+    let growth = 1u64 << attempt.min(10);
+    (config.provider_base_backoff_ms * growth).min(config.provider_max_backoff_ms)
+}
+
+pub fn validate_geoip_database_freshness(config: &IntelConfig) -> Result<()> {
+    fn check_one(path: &str, max_age_days: u32, fail_on_stale: bool) -> Result<()> {
+        let metadata = std::fs::metadata(path)
+            .map_err(|e| anyhow::anyhow!("GeoLite2 DB not readable at '{path}': {e}"))?;
+        let modified = metadata
+            .modified()
+            .map_err(|e| anyhow::anyhow!("GeoLite2 DB has no modified timestamp '{path}': {e}"))?;
+
+        let age = SystemTime::now()
+            .duration_since(modified)
+            .unwrap_or_else(|_| StdDuration::from_secs(0));
+        let max_age = StdDuration::from_secs(max_age_days as u64 * 24 * 3600);
+
+        if age > max_age {
+            let msg = format!(
+                "GeoLite2 DB '{path}' is stale: {:.1} days old (max {} days)",
+                age.as_secs_f64() / 86400.0,
+                max_age_days
+            );
+            if fail_on_stale {
+                return Err(anyhow::anyhow!(msg));
+            }
+            tracing::warn!(path = %path, age_days = age.as_secs_f64() / 86400.0, "{msg}");
+        }
+
+        Ok(())
+    }
+
+    if !Path::new(&config.geoip_mmdb_city_path).exists() {
+        return Err(anyhow::anyhow!(
+            "Missing GeoLite2 city DB at {}",
+            config.geoip_mmdb_city_path
+        ));
+    }
+    if !Path::new(&config.geoip_mmdb_asn_path).exists() {
+        return Err(anyhow::anyhow!(
+            "Missing GeoLite2 ASN DB at {}",
+            config.geoip_mmdb_asn_path
+        ));
+    }
+
+    check_one(
+        &config.geoip_mmdb_city_path,
+        config.geoip_max_age_days,
+        config.fail_on_stale_geoip,
+    )?;
+    check_one(
+        &config.geoip_mmdb_asn_path,
+        config.geoip_max_age_days,
+        config.fail_on_stale_geoip,
+    )?;
+
+    Ok(())
 }
 
 fn load_geo_from_mmdb(config: &IntelConfig, ip: Ipv4Addr) -> Result<Option<GeoIntel>> {
@@ -199,7 +273,11 @@ fn load_geo_from_mmdb(config: &IntelConfig, ip: Ipv4Addr) -> Result<Option<GeoIn
     }))
 }
 
-async fn enrich_with_abuseipdb(config: &IntelConfig, intel: &mut GeoIntel) {
+async fn enrich_with_abuseipdb(
+    config: &IntelConfig,
+    breaker_cfg: &CircuitBreakerConfig,
+    intel: &mut GeoIntel,
+) {
     if !config.enable_abuse_provider {
         return;
     }
@@ -209,59 +287,123 @@ async fn enrich_with_abuseipdb(config: &IntelConfig, intel: &mut GeoIntel) {
         _ => return,
     };
 
-    let url = format!(
-        "https://api.abuseipdb.com/api/v2/check?ipAddress={}&maxAgeInDays=90&verbose",
-        intel.ip
-    );
+    let breaker = ABUSE_BREAKER
+        .get_or_init(|| CircuitBreaker::new("abuseipdb", breaker_cfg.clone()));
+
+    if !breaker.allow().await {
+        ABUSE_CIRCUIT_OPEN.fetch_add(1, Ordering::Relaxed);
+        tracing::warn!(
+            provider = "abuseipdb",
+            event = "circuit_open",
+            total_circuit_open = ABUSE_CIRCUIT_OPEN.load(Ordering::Relaxed),
+            "AbuseIPDB request skipped by circuit breaker"
+        );
+        return;
+    }
 
     let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
+        .timeout(StdDuration::from_millis(config.provider_timeout_ms))
         .build()
     {
         Ok(c) => c,
         Err(_) => return,
     };
 
-    let response = match client
-        .get(url)
-        .header("Accept", "application/json")
-        .header("Key", api_key)
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(_) => return,
-    };
-
-    if !response.status().is_success() {
-        return;
-    }
-
-    let payload = match response.json::<AbuseIpDbResponse>().await {
-        Ok(p) => p,
-        Err(_) => return,
-    };
-
-    intel.abuse_confidence = payload.data.abuse_confidence_score;
-    if intel.org.is_none() {
-        intel.org = payload.data.isp;
-    }
-    intel.is_tor = payload.data.is_tor.unwrap_or(false);
-
-    if let Some(usage) = payload.data.usage_type {
-        let usage_lower = usage.to_lowercase();
-        intel.is_hosting = usage_lower.contains("hosting") || usage_lower.contains("datacenter");
-        intel.is_proxy = usage_lower.contains("proxy") || usage_lower.contains("vpn");
-    }
-
-    intel.confidence_score = compute_confidence(
-        intel.city.is_some(),
-        intel.asn.is_some(),
-        intel.abuse_confidence,
-        intel.is_tor,
-        intel.is_proxy,
+    let url = format!(
+        "https://api.abuseipdb.com/api/v2/check?ipAddress={}&maxAgeInDays=90&verbose",
+        intel.ip
     );
-    intel.provider_version = Some("geolite2+abuseipdb".to_string());
+
+    let attempts = config.provider_max_retries + 1;
+    for attempt in 0..attempts {
+        let response = client
+            .get(&url)
+            .header("Accept", "application/json")
+            .header("Key", &api_key)
+            .send()
+            .await;
+
+        match response {
+            Ok(resp) if resp.status().is_success() => {
+                let payload = match resp.json::<AbuseIpDbResponse>().await {
+                    Ok(p) => p,
+                    Err(_) => {
+                        ABUSE_FAILURE.fetch_add(1, Ordering::Relaxed);
+                        let _ = breaker.on_failure().await;
+                        return;
+                    }
+                };
+
+                intel.abuse_confidence = payload.data.abuse_confidence_score;
+                if intel.org.is_none() {
+                    intel.org = payload.data.isp;
+                }
+                intel.is_tor = payload.data.is_tor.unwrap_or(false);
+
+                if let Some(usage) = payload.data.usage_type {
+                    let usage_lower = usage.to_lowercase();
+                    intel.is_hosting =
+                        usage_lower.contains("hosting") || usage_lower.contains("datacenter");
+                    intel.is_proxy = usage_lower.contains("proxy") || usage_lower.contains("vpn");
+                }
+
+                intel.confidence_score = compute_confidence(
+                    intel.city.is_some(),
+                    intel.asn.is_some(),
+                    intel.abuse_confidence,
+                    intel.is_tor,
+                    intel.is_proxy,
+                );
+                intel.provider_version = Some("geolite2+abuseipdb".to_string());
+                ABUSE_SUCCESS.fetch_add(1, Ordering::Relaxed);
+                let _ = breaker.on_success().await;
+                tracing::info!(
+                    provider = "abuseipdb",
+                    event = "success",
+                    total_success = ABUSE_SUCCESS.load(Ordering::Relaxed),
+                    total_failures = ABUSE_FAILURE.load(Ordering::Relaxed),
+                    total_timeouts = ABUSE_TIMEOUT.load(Ordering::Relaxed),
+                    total_retries = ABUSE_RETRIES.load(Ordering::Relaxed),
+                    "AbuseIPDB enrichment applied"
+                );
+                return;
+            }
+            Ok(resp) => {
+                ABUSE_FAILURE.fetch_add(1, Ordering::Relaxed);
+                if attempt + 1 < attempts {
+                    ABUSE_RETRIES.fetch_add(1, Ordering::Relaxed);
+                    tokio::time::sleep(StdDuration::from_millis(provider_backoff_ms(config, attempt)))
+                        .await;
+                    continue;
+                }
+                let _ = breaker.on_failure().await;
+                tracing::warn!(
+                    provider = "abuseipdb",
+                    status = %resp.status(),
+                    event = "failed",
+                    total_failures = ABUSE_FAILURE.load(Ordering::Relaxed),
+                    "AbuseIPDB enrichment failed"
+                );
+                return;
+            }
+            Err(err) => {
+                if err.is_timeout() {
+                    ABUSE_TIMEOUT.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    ABUSE_FAILURE.fetch_add(1, Ordering::Relaxed);
+                }
+                if attempt + 1 < attempts {
+                    ABUSE_RETRIES.fetch_add(1, Ordering::Relaxed);
+                    tokio::time::sleep(StdDuration::from_millis(provider_backoff_ms(config, attempt)))
+                        .await;
+                    continue;
+                }
+                let _ = breaker.on_failure().await;
+                tracing::warn!(provider = "abuseipdb", error = %err, event = "error", "AbuseIPDB request failed");
+                return;
+            }
+        }
+    }
 }
 
 fn load_ip_geo_intel_from_db(pool: &DbPool, ip: &str) -> Result<Option<GeoIntel>, DeepMailError> {
@@ -358,6 +500,7 @@ pub async fn resolve_ip_intel(
     cache: &ThreatCache,
     pool: &DbPool,
     config: &IntelConfig,
+    breaker_cfg: &CircuitBreakerConfig,
     ip: &str,
 ) -> Result<Option<GeoIntel>> {
     let ipv4 = match is_public_ipv4(ip) {
@@ -370,6 +513,7 @@ pub async fn resolve_ip_intel(
             .map(|expires| expires > Utc::now())
             .unwrap_or(true)
         {
+            GEO_CACHE_HIT.fetch_add(1, Ordering::Relaxed);
             return Ok(Some(cached));
         }
     }
@@ -379,6 +523,7 @@ pub async fn resolve_ip_intel(
             .map(|expires| expires > Utc::now())
             .unwrap_or(false)
         {
+            GEO_CACHE_HIT.fetch_add(1, Ordering::Relaxed);
             let _ = cache
                 .set_with_ttl("ip", ip, &row, config.geoip_ttl_secs)
                 .await;
@@ -386,12 +531,13 @@ pub async fn resolve_ip_intel(
         }
     }
 
+    GEO_CACHE_MISS.fetch_add(1, Ordering::Relaxed);
     let mut intel = match load_geo_from_mmdb(config, ipv4)? {
         Some(intel) => intel,
         None => return Ok(None),
     };
 
-    enrich_with_abuseipdb(config, &mut intel).await;
+    enrich_with_abuseipdb(config, breaker_cfg, &mut intel).await;
     intel.resolved_at = now_iso();
     intel.expires_at = (Utc::now() + Duration::seconds(config.geoip_ttl_secs as i64)).to_rfc3339();
 
@@ -399,6 +545,12 @@ pub async fn resolve_ip_intel(
     let _ = cache
         .set_with_ttl("ip", ip, &intel, config.geoip_ttl_secs)
         .await;
+
+    tracing::debug!(
+        geo_cache_hit = GEO_CACHE_HIT.load(Ordering::Relaxed),
+        geo_cache_miss = GEO_CACHE_MISS.load(Ordering::Relaxed),
+        "Geo intel cache counters"
+    );
 
     Ok(Some(intel))
 }

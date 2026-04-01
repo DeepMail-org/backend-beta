@@ -430,7 +430,10 @@ mod tests {
     use axum::Router;
     use tower::util::ServiceExt;
 
-    use super::RESULTS_ROUTE;
+    use super::{
+        AnalysisResultEntry, EmailAnalysisReport, EmailSummary, GeoPoint, HopPoint, IocEntry,
+        JobProgressEntry, RESULTS_ROUTE,
+    };
 
     #[tokio::test]
     async fn results_route_matches_email_id_path() {
@@ -447,5 +450,72 @@ mod tests {
             .expect("run request");
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn results_payload_contract_contains_geo_and_hops() {
+        let report = EmailAnalysisReport {
+            email: EmailSummary {
+                id: "e1".to_string(),
+                original_name: "mail.eml".to_string(),
+                sha256_hash: "abc".to_string(),
+                file_size: 10,
+                submitted_at: "2026-01-01T00:00:00Z".to_string(),
+                status: "completed".to_string(),
+                current_stage: None,
+                completed_at: None,
+                error_message: None,
+            },
+            analysis_results: vec![AnalysisResultEntry {
+                id: "a1".to_string(),
+                result_type: "header_analysis".to_string(),
+                data: serde_json::json!({}),
+                threat_score: None,
+                confidence: None,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+            }],
+            job_progress: vec![JobProgressEntry {
+                id: "j1".to_string(),
+                stage: "parse_email".to_string(),
+                status: "completed".to_string(),
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                completed_at: None,
+                details: None,
+            }],
+            iocs: vec![IocEntry {
+                id: "i1".to_string(),
+                ioc_type: "ip".to_string(),
+                value: "8.8.8.8".to_string(),
+                first_seen: "2026-01-01T00:00:00Z".to_string(),
+                last_seen: "2026-01-01T00:00:00Z".to_string(),
+                metadata: None,
+            }],
+            geo_points: vec![GeoPoint {
+                id: "i1".to_string(),
+                ip: "8.8.8.8".to_string(),
+                lat: 1.0,
+                lon: 2.0,
+                country: "US".to_string(),
+                city: Some("X".to_string()),
+                region: Some("Y".to_string()),
+                asn: Some(15169),
+                org: Some("Google".to_string()),
+                risk: "medium".to_string(),
+                abuse_confidence: Some(10),
+                is_tor: false,
+                is_proxy: false,
+                confidence_score: 0.9,
+            }],
+            hop_timeline: vec![HopPoint {
+                hop: 1,
+                from_host: Some("from".to_string()),
+                by_host: Some("by".to_string()),
+                ip: Some("8.8.8.8".to_string()),
+            }],
+        };
+
+        let value = serde_json::to_value(report).expect("serialize report");
+        assert!(value.get("geo_points").is_some());
+        assert!(value.get("hop_timeline").is_some());
     }
 }
