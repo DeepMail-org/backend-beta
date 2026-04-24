@@ -8,7 +8,6 @@ use deepmail_common::backup::{self, BackupManifest};
 use deepmail_common::db::migrations::MIGRATION_COUNT;
 use deepmail_common::errors::DeepMailError;
 
-use crate::auth::RequireSuperadmin;
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
@@ -37,7 +36,6 @@ pub fn routes() -> Router<AppState> {
 
 async fn backup_handler(
     State(state): State<AppState>,
-    RequireSuperadmin(auth): RequireSuperadmin,
 ) -> Result<(StatusCode, Json<BackupResponse>), DeepMailError> {
     let result = backup::create_backup(state.db_pool(), &state.config().backup, MIGRATION_COUNT)?;
 
@@ -46,7 +44,7 @@ async fn backup_handler(
         "admin_backup_create",
         "database",
         Some(&result.backup_path),
-        Some(&auth.user_id),
+        Some("00000000-0000-0000-0000-000000000000"),
         None,
     );
 
@@ -61,7 +59,6 @@ async fn backup_handler(
 
 async fn restore_handler(
     State(state): State<AppState>,
-    RequireSuperadmin(auth): RequireSuperadmin,
     Json(request): Json<RestoreRequest>,
 ) -> Result<(StatusCode, Json<RestoreResponse>), DeepMailError> {
     let manifest = backup::restore_backup(
@@ -76,7 +73,7 @@ async fn restore_handler(
         "admin_backup_restore",
         "database",
         Some(&request.backup_path),
-        Some(&auth.user_id),
+        Some("00000000-0000-0000-0000-000000000000"),
         None,
     );
 

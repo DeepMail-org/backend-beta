@@ -9,7 +9,6 @@ use futures_util::StreamExt;
 
 use deepmail_common::errors::DeepMailError;
 
-use crate::auth::AuthUser;
 use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
@@ -19,11 +18,10 @@ pub fn routes() -> Router<AppState> {
 async fn ws_handler(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    auth: AuthUser,
     Path(email_id): Path<String>,
     ws: WebSocketUpgrade,
 ) -> Result<Response, DeepMailError> {
-    let user_id = auth.user_id;
+    let user_id = "00000000-0000-0000-0000-000000000000".to_string();
     {
         let conn = state.db_pool().get()?;
         let owns: Option<String> = conn

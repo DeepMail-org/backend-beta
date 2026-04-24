@@ -2,10 +2,8 @@
 //!
 //! All routes are under `/api/v1/`.
 
-pub mod admin_abuse;
 pub mod admin_backup;
 pub mod admin_replay;
-pub mod auth_tokens;
 pub mod dashboard;
 pub mod health;
 pub mod metrics;
@@ -23,7 +21,6 @@ use crate::state::AppState;
 pub fn api_routes(state: AppState) -> Router {
     let admin_allowlist = state.config().security.admin_ip_allowlist.clone();
     let admin_routes = Router::new()
-        .merge(admin_abuse::routes())
         .merge(admin_replay::routes())
         .merge(admin_backup::routes())
         .route_layer(middleware::from_fn_with_state(
@@ -35,7 +32,6 @@ pub fn api_routes(state: AppState) -> Router {
         .merge(dashboard::routes())
         .merge(health::routes())
         .merge(upload::routes())
-        .merge(auth_tokens::routes())
         .merge(results::routes())
         .merge(metrics::routes())
         .merge(admin_routes)

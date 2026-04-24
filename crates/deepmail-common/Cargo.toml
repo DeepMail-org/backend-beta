@@ -37,3 +37,11 @@ argon2 = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
 rand = { workspace = true }
+
+# gRPC / Protobuf
+tonic = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }

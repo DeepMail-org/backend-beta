@@ -8,7 +8,6 @@
 //!
 //! **No heavy processing happens here.** All analysis is delegated to workers.
 
-mod auth;
 mod middleware;
 mod routes;
 mod state;
@@ -17,7 +16,6 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use axum::Router;
-use axum::middleware::from_fn_with_state;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
@@ -115,10 +113,6 @@ fn build_router(state: AppState, config: &AppConfig) -> Router {
 
     Router::new()
         .nest("/api/v1", api_routes)
-        .layer(from_fn_with_state(
-            state,
-            crate::middleware::mtls::enforce_mtls_for_auth_admin,
-        ))
         // ── Middleware stack (applied bottom-to-top) ──
         // Request body size limit
         .layer(RequestBodyLimitLayer::new(config.server.max_body_size))

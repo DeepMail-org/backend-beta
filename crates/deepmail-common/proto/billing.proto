@@ -1,0 +1,141 @@
+syntax = "proto3";
+
+package deepmail.billing.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option java_package = "com.deepmail.billing.v1";
+option go_package = "deepmail/billing/v1;billingv1";
+
+// ─── Service ────────────────────────────────────────────────────────────────
+
+// BillingMeter provides usage-based metering for the DeepMail platform.
+// Passively subscribes to all NATS event subjects to auto-meter pipeline events.
+// No other service calls billing directly — metering is a passive side-effect.
+service BillingMeter {
+  // Record a single metered event. Idempotent via idempotency_key.
+  rpc RecordEvent(MeterEvent) returns (MeterAck);
+
+  // Record a batch of metered events. Each event is individually idempotent.
+  rpc RecordBatch(MeterBatch) returns (MeterAck);
+
+  // Retrieve usage breakdown for a tenant over a time period.
+  rpc GetUsageSummary(UsageRequest) returns (UsageSummary);
+
+  // Check whether a tenant has remaining quota for a given event type.
+  rpc CheckQuota(QuotaRequest) returns (QuotaResult);
+}
+
+// ─── Enums ──────────────────────────────────────────────────────────────────
+
+// Billable event types across the DeepMail pipeline.
+// Each maps to a NATS subject pattern that the billing service subscribes to.
+enum MeterEventType {
+  EMAIL_ANALYZED                = 0; // deepmail.events.results.*
+  SANDBOX_URL_DETONATION        = 1; // deepmail.events.sandbox.url.*
+  SANDBOX_ATTACHMENT_DETONATION = 2; // deepmail.events.sandbox.attachment.*
+  GEO_LOOKUP                    = 3; // deepmail.events.geo.*
+  IOC_ENRICHMENT                = 4; // deepmail.events.ioc.*
+  GRAPH_QUERY                   = 5; // deepmail.events.graph.*
+  REPORT_GENERATED              = 6; // deepmail.events.report.*
+  API_CALL                      = 7; // gateway request counter
+}
+
+// ─── RecordEvent / RecordBatch ──────────────────────────────────────────────
+
+// A single billable pipeline event.
+message MeterEvent {
+  // Tenant that owns this event. All billing is tenant-scoped.
+  string tenant_id = 1;
+
+  // Which billable action occurred.
+  MeterEventType event_type = 2;
+
+  // When the event actually occurred in the pipeline.
+  google.protobuf.Timestamp occurred_at = 3;
+
+  // Idempotency key — UUID v5 derived from NATS message ID + event_type.
+  // ON CONFLICT on this key skips the insert, preventing double-billing
+  // on at-least-once NATS delivery.
+  string idempotency_key = 4;
+
+  // Optional contextual metadata for audit trail.
+  // Common keys: "email_id", "file_size_bytes", "provider", "report_format".
+  map<string, string> metadata = 5;
+}
+
+// Batch wrapper for recording multiple events in a single RPC call.
+message MeterBatch {
+  repeated MeterEvent events = 1;
+}
+
+// Acknowledgement returned by RecordEvent and RecordBatch.
+message MeterAck {
+  // Number of events successfully recorded (new inserts).
+  uint32 accepted = 1;
+
+  // Number of events skipped because their idempotency_key already existed.
+  uint32 duplicate_skipped = 2;
+}
+
+// ─── GetUsageSummary ────────────────────────────────────────────────────────
+
+message UsageRequest {
+  // Tenant to query usage for.
+  string tenant_id = 1;
+
+  // Start of the billing period (inclusive).
+  google.protobuf.Timestamp period_start = 2;
+
+  // End of the billing period (exclusive).
+  google.protobuf.Timestamp period_end = 3;
+}
+
+message UsageSummary {
+  // Echo back fields for correlation.
+  string tenant_id = 1;
+  google.protobuf.Timestamp period_start = 2;
+  google.protobuf.Timestamp period_end = 3;
+
+  // Per-event-type usage breakdown with pricing.
+  repeated UsageLine breakdown = 4;
+}
+
+// A single line item in the usage breakdown.
+message UsageLine {
+  // Which event type this line covers.
+  MeterEventType event_type = 1;
+
+  // Total number of events of this type in the period.
+  uint64 count = 2;
+
+  // Price per unit in USD cents (e.g., 200 = ¢2.00).
+  // For per-1000 pricing, this is the price per 1000 events.
+  uint32 unit_price_usd_cents = 3;
+
+  // Total cost for this line in USD cents.
+  // Computed as: (count * unit_price_usd_cents) / unit_divisor.
+  uint64 total_usd_cents = 4;
+}
+
+// ─── CheckQuota ─────────────────────────────────────────────────────────────
+
+message QuotaRequest {
+  // Tenant to check quota for.
+  string tenant_id = 1;
+
+  // Which event type to check quota for.
+  MeterEventType event_type = 2;
+}
+
+message QuotaResult {
+  // Whether the tenant is currently allowed to perform this event type.
+  bool allowed = 1;
+
+  // Number of events remaining in the current quota period.
+  // 0 if quota is exhausted. max uint64 if unlimited.
+  uint64 remaining = 2;
+
+  // When the current quota period resets (next billing cycle start).
+  google.protobuf.Timestamp resets_at = 3;
+}

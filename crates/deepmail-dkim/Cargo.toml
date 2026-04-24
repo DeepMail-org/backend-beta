@@ -1,0 +1,52 @@
+[package]
+name = "deepmail-dkim"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "DKIM replay attack detection service for DeepMail"
+
+[[bin]]
+name = "deepmail-dkim"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true }
+
+# gRPC
+tonic = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+
+# NATS
+async-nats = { workspace = true }
+
+# Database
+sqlx = { workspace = true }
+
+# DNS resolution
+trust-dns-resolver = { workspace = true }
+
+# Crypto — body hash + signature verification
+sha2 = { workspace = true }
+base64 = { workspace = true }
+rsa = { workspace = true }
+ed25519-dalek = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Configuration
+config = { workspace = true }
+
+# Internal
+deepmail-common = { path = "../deepmail-common" }

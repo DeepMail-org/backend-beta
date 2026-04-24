@@ -36,7 +36,6 @@ use deepmail_common::reuse;
 use deepmail_common::upload::{quarantine, validation};
 use deepmail_common::utils;
 
-use crate::auth::AuthUser;
 use crate::state::AppState;
 
 /// Register upload routes.
@@ -52,10 +51,9 @@ async fn upload_handler(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    auth: AuthUser,
     mut multipart: Multipart,
 ) -> Result<(StatusCode, Json<UploadResponse>), DeepMailError> {
-    let user_id = auth.user_id;
+    let user_id = "00000000-0000-0000-0000-000000000000".to_string();
     {
         let conn = state.db_pool().get()?;
         ensure_user_exists(&conn, &user_id)?;

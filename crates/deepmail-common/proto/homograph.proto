@@ -1,0 +1,136 @@
+syntax = "proto3";
+
+package deepmail.homograph.v1;
+
+option java_package = "com.deepmail.homograph.v1";
+option go_package = "deepmail/homograph/v1;homographv1";
+
+// ─── Service ────────────────────────────────────────────────────────────────
+
+// HomographAnalyzer detects IDN homograph attacks across all domains in an email.
+// Decodes Punycode, NFKC-normalizes, detects mixed-script codepoints, computes
+// confusable skeletons, and scores visual similarity against known brand domains.
+service HomographAnalyzer {
+  // Batch analysis: score every domain extracted from an email in one call.
+  // Called by deepmail-ioc during the enrichment phase.
+  rpc AnalyzeDomains(DomainBatchRequest) returns (DomainBatchResult);
+
+  // Single-domain scoring for ad-hoc lookups or re-checks.
+  rpc ScoreDomain(SingleDomainRequest) returns (DomainScore);
+}
+
+// ─── Enums ──────────────────────────────────────────────────────────────────
+
+// Risk classification based on similarity score and mixed-script detection.
+enum HomographRisk {
+  RISK_NONE     = 0; // No resemblance to any known brand
+  RISK_LOW      = 1; // Similarity ≥ 0.55 — minor visual overlap
+  RISK_MEDIUM   = 2; // Similarity ≥ 0.70 — notable resemblance
+  RISK_HIGH     = 3; // Similarity ≥ 0.85 or mixed-script detected
+  RISK_CRITICAL = 4; // Skeleton exact match — visually indistinguishable from brand
+}
+
+// ─── AnalyzeDomains ─────────────────────────────────────────────────────────
+
+message DomainBatchRequest {
+  // Internal email ID (UUID) linking to deepmail-ingest record.
+  string email_id = 1;
+
+  // All domains extracted from the email: sender (From/Return-Path),
+  // headers (Reply-To, envelope), and body links (href, plain-text URLs).
+  repeated string domains = 2;
+}
+
+message DomainBatchResult {
+  // Echo back the email_id for correlation.
+  string email_id = 1;
+
+  // One DomainScore per input domain, in the same order.
+  repeated DomainScore scores = 2;
+
+  // The domain with the highest visual_similarity_score in this batch.
+  string highest_risk_domain = 3;
+
+  // The peak similarity score across all domains in the batch.
+  float max_similarity_score = 4;
+
+  // Aggregate verdict: true if any domain scored RISK_HIGH or RISK_CRITICAL.
+  bool homograph_detected = 5;
+}
+
+// ─── ScoreDomain ────────────────────────────────────────────────────────────
+
+message SingleDomainRequest {
+  // The domain to analyze (may be Punycode-encoded or raw Unicode).
+  string domain = 1;
+
+  // Optional list of brand domains to compare against.
+  // If empty, the service uses its built-in brand list (25+ domains).
+  repeated string target_brands = 2;
+}
+
+// ─── DomainScore ────────────────────────────────────────────────────────────
+
+// Per-domain analysis result from the homograph detection pipeline.
+message DomainScore {
+  // The domain exactly as it appeared in the email (may be Punycode).
+  string original_domain = 1;
+
+  // After Punycode/IDN decode via UTS46.
+  // Example: "xn--pypal-4ve.com" → "pаypal.com"
+  string decoded_unicode = 2;
+
+  // After NFKC normalization and lowercasing.
+  // This is the canonical form used for skeleton comparison.
+  string normalized_ascii = 3;
+
+  // Whether the original domain was an Internationalized Domain Name
+  // (contained Punycode "xn--" labels or non-ASCII codepoints).
+  bool is_idn = 4;
+
+  // Codepoints that belong to a different Unicode script than the
+  // dominant script in their label. These are the attack vector.
+  repeated SuspiciousCodepoint suspicious_codepoints = 5;
+
+  // The brand domain this most closely resembles after skeleton comparison.
+  // Example: "paypal.com"
+  string best_brand_match = 6;
+
+  // Visual similarity score in [0.0, 1.0].
+  // Computed as: 1.0 - (levenshtein_distance / max(len(skeleton), len(brand_skeleton)))
+  float visual_similarity_score = 7;
+
+  // Raw Levenshtein edit distance between the domain skeleton and
+  // the best-matching brand skeleton.
+  uint32 edit_distance = 8;
+
+  // Whether the Unicode confusable skeleton (TR39) of this domain
+  // exactly matches the skeleton of a known brand domain.
+  bool skeleton_match = 9;
+
+  // Final risk classification.
+  HomographRisk risk_level = 10;
+}
+
+// ─── SuspiciousCodepoint ────────────────────────────────────────────────────
+
+// A single codepoint in a domain label that belongs to a different Unicode
+// script than the label's dominant script. These mixed-script codepoints
+// are the mechanism behind IDN homograph attacks.
+message SuspiciousCodepoint {
+  // Zero-based position of this codepoint within the decoded domain string.
+  uint32 position = 1;
+
+  // The Unicode codepoint value (e.g., 0x0430 for Cyrillic small letter а).
+  uint32 codepoint = 2;
+
+  // The Unicode script this codepoint belongs to (e.g., "Cyrillic", "Greek").
+  string script = 3;
+
+  // The dominant script of the label this codepoint appears in (e.g., "Latin").
+  string expected_script = 4;
+
+  // The ASCII character this codepoint is visually confusable with.
+  // From the Unicode CONFUSABLE_MAP (e.g., Cyrillic "а" → Latin "a").
+  string confusable_with = 5;
+}

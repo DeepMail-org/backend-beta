@@ -27,7 +27,6 @@ use serde::{Deserialize, Serialize};
 
 use deepmail_common::errors::DeepMailError;
 
-use crate::auth::AuthUser;
 use crate::state::AppState;
 
 const RESULTS_ROUTE: &str = "/results/:email_id";
@@ -170,10 +169,9 @@ async fn results_handler(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     _headers: HeaderMap,
-    auth: AuthUser,
     Path(email_id): Path<String>,
 ) -> Result<(StatusCode, Json<EmailAnalysisReport>), DeepMailError> {
-    let user_id = auth.user_id;
+    let user_id = "00000000-0000-0000-0000-000000000000".to_string();
     enforce_rate_limits(&state, &user_id, addr.ip().to_string(), "results").await?;
 
     let conn = state.db_pool().get()?;

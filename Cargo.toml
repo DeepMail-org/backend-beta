@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/deepmail-api",
     "crates/deepmail-common",
+    "crates/deepmail-dkim",
     "crates/deepmail-worker",
     "crates/deepmail-sandbox",
     "crates/deepmail-sandbox-worker",
@@ -21,7 +22,12 @@ tokio = { version = "1", features = ["full"] }
 # Web framework
 axum = { version = "0.7", features = ["multipart", "ws"] }
 tower = { version = "0.4" }
-tower-http = { version = "0.5", features = ["cors", "trace", "limit", "request-id"] }
+tower-http = { version = "0.5", features = [
+    "cors",
+    "trace",
+    "limit",
+    "request-id",
+] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -77,6 +83,34 @@ argon2 = "0.5"
 tar = "0.4"
 flate2 = "1"
 rand = "0.8"
+
+# gRPC / Protobuf
+tonic = { version = "0.12", features = ["transport"] }
+prost = "0.13"
+prost-types = "0.13"
+tonic-build = "0.12"
+
+# NATS
+async-nats = "0.38"
+
+# PostgreSQL (SQLx)
+sqlx = { version = "0.8", features = [
+    "runtime-tokio",
+    "tls-rustls",
+    "postgres",
+    "macros",
+    "migrate",
+    "uuid",
+    "chrono",
+] }
+
+# DNS
+trust-dns-resolver = "0.23"
+
+# Crypto
+base64 = "0.22"
+rsa = "0.9"
+ed25519-dalek = { version = "2", features = ["pkcs8"] }
 
 [profile.release]
 opt-level = 3

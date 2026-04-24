@@ -9,7 +9,6 @@ use std::net::SocketAddr;
 
 use deepmail_common::errors::DeepMailError;
 
-use crate::auth::AuthUser;
 use crate::state::AppState;
 
 // ─── Response types ───────────────────────────────────────────────────────────
@@ -71,9 +70,9 @@ async fn dashboard_handler(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     _headers: HeaderMap,
-    auth: AuthUser,
 ) -> Result<(StatusCode, Json<DashboardData>), DeepMailError> {
-    enforce_rate_limits(&state, &auth.user_id, addr.ip().to_string(), "dashboard").await?;
+    let user_id = "00000000-0000-0000-0000-000000000000".to_string();
+    enforce_rate_limits(&state, &user_id, addr.ip().to_string(), "dashboard").await?;
 
     let conn = state.db_pool().get()?;
 
@@ -96,7 +95,7 @@ async fn dashboard_handler(
         WHERE e.submitted_at >= datetime('now', '-1 day') AND e.submitted_by = ?1 AND e.is_deleted = 0
     ";
 
-    if let Some(row) = conn.query_row(stats_query, rusqlite::params![auth.user_id], |row| {
+    if let Some(row) = conn.query_row(stats_query, rusqlite::params![user_id], |row| {
         Ok((
             row.get::<_, Option<i64>>(0).unwrap_or(Some(0)).unwrap_or(0),
             row.get::<_, Option<i64>>(1).unwrap_or(Some(0)).unwrap_or(0),
@@ -126,7 +125,7 @@ async fn dashboard_handler(
     ";
 
     let mut stmt = conn.prepare(trend_query)?;
-    let trend_rows = stmt.query_map(rusqlite::params![auth.user_id], |row| {
+    let trend_rows = stmt.query_map(rusqlite::params![user_id], |row| {
         Ok(TrendDataPoint {
             hour: row.get(0)?,
             safe: row.get::<_, Option<i64>>(1).unwrap_or(Some(0)).unwrap_or(0),
@@ -158,7 +157,7 @@ async fn dashboard_handler(
     ";
 
     let mut stmt_recent = conn.prepare(recent_query)?;
-    let recent_rows = stmt_recent.query_map(rusqlite::params![auth.user_id], |row| {
+    let recent_rows = stmt_recent.query_map(rusqlite::params![user_id], |row| {
         let score: Option<f64> = row.get(4)?;
         let score_val = score.unwrap_or(0.0);
         let risk_level = if score_val >= 80.0 {

@@ -1,0 +1,156 @@
+syntax = "proto3";
+
+package deepmail.dkim.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option java_package = "com.deepmail.dkim.v1";
+option go_package = "deepmail/dkim/v1;dkimv1";
+
+// ─── Service ────────────────────────────────────────────────────────────────
+
+// DkimAnalyzer performs DKIM replay attack detection on email messages.
+// Called by deepmail-ioc during the enrichment phase of the analysis pipeline.
+service DkimAnalyzer {
+  // Full DKIM replay analysis for a single email.
+  // Recomputes body hashes, cross-correlates timestamps, checks key rotation.
+  rpc AnalyzeDkim(DkimAnalysisRequest) returns (DkimAnalysisResult);
+
+  // Lightweight check: has the DKIM signing key been rotated since a given time?
+  // Used for targeted re-validation without full re-analysis.
+  rpc CheckKeyRotation(KeyRotationRequest) returns (KeyRotationResult);
+}
+
+// ─── Enums ──────────────────────────────────────────────────────────────────
+
+// Status of the DKIM public key as resolved from DNS TXT record.
+enum DkimKeyStatus {
+  KEY_UNKNOWN   = 0; // DNS lookup failed or timed out
+  KEY_VALID     = 1; // Key found and matches signing algorithm
+  KEY_ROTATED   = 2; // Key found but differs from signing-time key
+  KEY_REVOKED   = 3; // Key record exists but p= tag is empty (deliberate revocation)
+  KEY_NOT_FOUND = 4; // No DKIM TXT record at selector._domainkey.domain
+}
+
+// ─── AnalyzeDkim ────────────────────────────────────────────────────────────
+
+message DkimAnalysisRequest {
+  // Internal email ID (UUID) linking to deepmail-ingest record.
+  string email_id = 1;
+
+  // Full RFC 5322 headers as received (including all DKIM-Signature headers).
+  string raw_headers = 2;
+
+  // Raw message body as received, prior to any canonicalization.
+  // The service will apply simple/relaxed canonicalization per the c= tag.
+  string raw_body = 3;
+
+  // Timestamp when our ingest service first received the email.
+  // Used to compute receive_delta_seconds for stale-replay detection.
+  google.protobuf.Timestamp received_at = 4;
+}
+
+message DkimAnalysisResult {
+  // Echo back the email_id for correlation.
+  string email_id = 1;
+
+  // One entry per DKIM-Signature header found in the email.
+  repeated DkimSignature signatures = 2;
+
+  // Aggregate verdict: true if replay_confidence >= 0.6
+  bool replay_detected = 3;
+
+  // Confidence score in [0.0, 1.0], computed as min(1.0, Σ triggered_weights).
+  float replay_confidence = 4;
+
+  // Human-readable explanations for each triggered signal.
+  // Example: "Body hash mismatch after relaxed canonicalization"
+  repeated string replay_reasons = 5;
+
+  // Wall-clock time spent on this analysis, in milliseconds.
+  uint64 analysis_ms = 6;
+}
+
+// ─── DkimSignature ──────────────────────────────────────────────────────────
+
+// Per-signature analysis result. One email can have multiple DKIM signatures
+// (e.g., from forwarding relays or mailing lists).
+message DkimSignature {
+  // DKIM selector (s= tag). Used to locate the DNS TXT record.
+  string selector = 1;
+
+  // Signing domain (d= tag). Combined with selector for DNS lookup:
+  // {selector}._domainkey.{domain}
+  string domain = 2;
+
+  // Signing algorithm from a= tag (e.g., "rsa-sha256", "ed25519-sha256").
+  string algorithm = 3;
+
+  // Timestamp from the t= tag (signing time).
+  google.protobuf.Timestamp timestamp_signed = 4;
+
+  // Timestamp from the x= tag (signature expiry). Optional — may be unset
+  // if the signer did not include an expiry.
+  google.protobuf.Timestamp timestamp_expiry = 5;
+
+  // The body hash value claimed in the bh= tag (base64-encoded).
+  string body_hash_claimed = 6;
+
+  // The body hash we recomputed from raw_body after applying the
+  // canonicalization specified in the c= tag (base64-encoded).
+  string body_hash_computed = 7;
+
+  // Whether body_hash_claimed matches body_hash_computed.
+  // Mismatch is a strong replay signal (weight 0.90).
+  bool body_hash_match = 8;
+
+  // Signed difference: (t= epoch) minus (Date: header epoch), in seconds.
+  // Large absolute values indicate timestamp manipulation.
+  // Positive = t= is after Date:, Negative = t= is before Date:.
+  int64 header_delta_seconds = 9;
+
+  // Signed difference: (received_at epoch) minus (t= epoch), in seconds.
+  // Values > 86400 indicate stale replay (weight 0.50).
+  // Negative values indicate future timestamp (weight 0.85).
+  int64 receive_delta_seconds = 10;
+
+  // Current status of the signing key as resolved from DNS.
+  DkimKeyStatus key_status = 11;
+
+  // Whether the current DNS key differs from what was used at signing time.
+  // True indicates the domain has rotated keys since this email was signed.
+  bool key_rotated_since_signing = 12;
+
+  // Whether we successfully retrieved a public key from DNS for this selector.
+  bool current_public_key_found = 13;
+
+  // Whether the cryptographic signature verification passed.
+  // Note: a valid signature on a replayed email is expected — the signature
+  // was originally valid, and replay preserves it.
+  bool signature_valid = 14;
+}
+
+// ─── CheckKeyRotation ───────────────────────────────────────────────────────
+
+message KeyRotationRequest {
+  // DKIM selector to query.
+  string selector = 1;
+
+  // Domain to query.
+  string domain = 2;
+
+  // The t= timestamp from the original DKIM signature.
+  // Used to determine if the key has changed since signing.
+  google.protobuf.Timestamp signing_timestamp = 3;
+}
+
+message KeyRotationResult {
+  // True if the current DNS key differs from what was cached at signing_timestamp.
+  bool was_rotated = 1;
+
+  // The current p= tag value from DNS (base64-encoded public key), if found.
+  string current_key_tag = 2;
+
+  // When we first detected the rotation. Unset if no rotation detected.
+  google.protobuf.Timestamp rotation_detected_at = 3;
+}

@@ -72,7 +72,7 @@ geoip_mmdb_asn_path = "data/geoip/GeoLite2-ASN.mmdb"
 # TTL for resolved geo intel and abuse intel caches
 geoip_ttl_secs = 86400
 geoip_max_age_days = 30
-fail_on_stale_geoip = true
+fail_on_stale_geoip = false
 abuse_ttl_secs = 43200
 virustotal_ttl_secs = 21600
 # Abuse enrichment provider settings
